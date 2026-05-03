@@ -471,7 +471,7 @@ bind 127.0.0.1 内网 IP
 
 ```
 rename-command FLUSHDB ""      # 禁用
-rename-command CONFIG admin_config_xxx   # 改名
+rename-command CONFIG admin_config_safe   # 改名
 rename-command KEYS ""
 ```
 
@@ -629,7 +629,7 @@ slowlog-max-len 1000
 rename-command FLUSHDB ""
 rename-command FLUSHALL ""
 rename-command KEYS ""
-rename-command CONFIG admin_config_xxx
+rename-command CONFIG admin_config_safe
 
 # IO 多线程 (6.0+)
 io-threads 4
