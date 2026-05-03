@@ -422,7 +422,7 @@ func TestSomething(t *testing.T) {
 ```
 
 或者：
-- 每个测试用唯一前缀（`t_orders_test_xxx`）
+- 每个测试用唯一前缀（`t_orders_test_20260503`）
 - 测试后清理
 - 用容器，每次 fresh
 

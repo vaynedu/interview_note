@@ -378,7 +378,7 @@ ID: string（雪花/UUID）/ int64
   "code": 40001,                          // 机器看：精确分类
   "message": "您输入的订单号不存在",      // 用户看：友好
   "trace_id": "abc",                      // 排查
-  "internal_message": "Order id=xxx not found in DB", // 开发看（不返用户）
+  "internal_message": "Order id=202605030001 not found in DB", // 开发看（不返用户）
   "details": { "field": "order_id" }      // 结构化信息
 }
 ```
@@ -689,8 +689,8 @@ mindmap
 
 ## 功能
 
-- xxx
-- xxx
+- 用户登录
+- 订单查询
 
 ## 快速开始
 
@@ -711,8 +711,8 @@ make run
 
 ## 联系
 
-- 责任人: xxx
-- 邮件: xxx@xxx
+- 责任人: order-team
+- 邮件: order-team@example.com
 ```
 
 ### 8.3 ADR（架构决策记录）
