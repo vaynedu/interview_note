@@ -27,18 +27,93 @@
 4. 重复直到无灰
 5. 剩下的白对象 = 垃圾，回收
 
+**三色标记演进图：**
+
+```mermaid
+flowchart LR
+    subgraph 初始["①初始: 全白"]
+        A1((A 白))
+        B1((B 白))
+        C1((C 白))
+        D1((D 白))
+        E1((E 白))
+        A1 --> B1
+        A1 --> C1
+        B1 --> D1
+        E1
+    end
+
+    subgraph 中间["②扫 root: A 灰"]
+        A2((A 灰))
+        B2((B 白))
+        C2((C 白))
+        D2((D 白))
+        E2((E 白))
+        A2 --> B2
+        A2 --> C2
+        B2 --> D2
+    end
+
+    subgraph 进行["③ A 完成: 子置灰"]
+        A3((A 黑))
+        B3((B 灰))
+        C3((C 灰))
+        D3((D 白))
+        E3((E 白))
+        A3 --> B3
+        A3 --> C3
+        B3 --> D3
+    end
+
+    subgraph 结束["④全部完成"]
+        A4((A 黑))
+        B4((B 黑))
+        C4((C 黑))
+        D4((D 黑))
+        E4((E 白<br/>垃圾))
+        A4 --> B4
+        A4 --> C4
+        B4 --> D4
+    end
+
+    初始 --> 中间 --> 进行 --> 结束
+
+    style E4 fill:#f99
+    style A4 fill:#333,color:#fff
+    style B4 fill:#333,color:#fff
+    style C4 fill:#333,color:#fff
+    style D4 fill:#333,color:#fff
+```
+
+> 最终所有可达对象变黑，未被引用的 E 仍为白色 → 回收。
+
 ### 1.3 为什么需要写屏障？
 
 并发场景下用户代码同时跑会破坏三色不变性：
 
 > **三色不变性**：黑色对象不能直接引用白色对象（否则白色会被漏标 → 误回收）
 
-破坏场景：
-```
-GC: 扫到 A=黑, B=白
-用户: A.next = C (C 是已扫的白对象, 应该存活)
-       B.next = nil (B 不再被引用)
-GC 后: C 是白色, 被回收 ← BUG
+**漏标场景图示：**
+
+```mermaid
+sequenceDiagram
+    participant GC as GC 标记线程
+    participant App as 用户线程
+    participant A as A (黑)
+    participant B as B (灰)
+    participant C as C (白, 应存活)
+
+    Note over A,C: 初始: A 黑, B 灰, C 白; B→C
+    GC->>B: 扫描 B
+    App->>A: A.ref = C (新指针)
+    App->>B: B.ref = nil (断开)
+    GC->>B: B 变黑(没有 C 的引用了)
+    Note over A,C: 此时 A→C 但 A 是黑, 不会再扫 C
+    GC->>C: 标记结束: C 仍白 → 误回收!
+
+    rect rgb(255, 220, 220)
+    Note over GC,C: BUG: C 被错误回收
+    end
 ```
 
 写屏障 = **指针赋值时的 hook**，保证不变性。
@@ -72,6 +147,29 @@ GC 后: C 是白色, 被回收 ← BUG
 ```
 
 两次 STW 加起来通常 < 1ms。Mark 阶段会占用 25% 的 CPU（GOGC 默认配置）。
+
+**GC 阶段时间线：**
+
+```mermaid
+gantt
+    title GC 阶段时序 (一次完整 GC 周期)
+    dateFormat X
+    axisFormat %s
+
+    section 用户代码
+    业务运行(分配/写指针)              :u1, 0, 100
+    用户继续(写屏障开启)               :u2, 100, 800
+    用户继续(写屏障关闭)               :u3, 850, 1000
+
+    section GC 工作
+    STW Sweep Term                     :crit, s1, 100, 5
+    并发 Mark + 写屏障                 :active, m1, 105, 700
+    Mark Assist (用户协助)              :a1, 200, 600
+    STW Mark Term                      :crit, s2, 805, 5
+    并发 Sweep                         :active, sw1, 810, 1000
+```
+
+> 关键：两次 STW 极短（通常微秒到 ms 级），Mark 与 Sweep 都和用户代码**并发**。Mark 占 ~25% CPU。
 
 ### 1.6 GC 触发时机
 
