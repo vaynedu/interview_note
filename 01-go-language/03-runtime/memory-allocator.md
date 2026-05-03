@@ -54,6 +54,44 @@ p := &Point{X: 1}  // 分配 16B
 
 **全无锁**（mcache 是 per-P 的）。本地 span 用完 → 去 mcentral 取。
 
+**分配决策流程：**
+
+```mermaid
+flowchart TD
+    Start([分配对象]) --> Size{对象大小}
+
+    Size -->|< 16B 且无指针| Tiny[Tiny Allocator<br/>合并到 16B 块]
+    Size -->|16B ~ 32KB| SC[计算 size class<br/>共 67 类]
+    Size -->|> 32KB 大对象| Large[直接走 mheap<br/>按页分配]
+
+    Tiny --> McacheT[mcache.tiny]
+    McacheT --> Done([返回地址])
+
+    SC --> Mc{mcache 对应 span<br/>有空闲 slot?}
+    Mc -->|有| TakeSlot[从位图取一个 slot]
+    TakeSlot --> Done
+
+    Mc -->|没有| McentralReq[去 mcentral<br/>申请新 span]
+    McentralReq --> Mcent{mcentral partial 链<br/>有可用 span?}
+    Mcent -->|有| GetSpan[span 给 mcache]
+    GetSpan --> TakeSlot
+    Mcent -->|没有| MheapReq[去 mheap<br/>申请页]
+
+    MheapReq --> Mh{mheap 有空闲页?}
+    Mh -->|有| FormSpan[切出 span 给 mcentral]
+    FormSpan --> GetSpan
+    Mh -->|没有| OS[向 OS mmap]
+    OS --> FormSpan
+
+    Large --> Mh
+
+    style Done fill:#9f9
+    style OS fill:#f99
+    style Tiny fill:#ff9
+```
+
+> **快路径**（mcache 命中）几乎所有分配都在这里完成，无锁；慢路径才会有竞争。
+
 ### 1.4 mcentral
 
 每个 size class 一个 mcentral，含两个链表：
