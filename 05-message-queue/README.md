@@ -13,6 +13,8 @@
 | 05 | [消费者与 Rebalance](05-consumer-rebalance.md) | 消费者组 / offset / Rebalance / 消费模式 |
 | 06 | [选型对比](06-comparison.md) | Kafka vs RocketMQ vs RabbitMQ vs Pulsar |
 | 07 | [场景实战](07-scenarios.md) | 削峰 / 解耦 / 事务消息 / 延时 / 死信 / 重试 / 踩坑 |
+| 08 | [线上案例](08-production-cases.md) | 消息积压 / 重复消费 / 消息丢失 / 顺序错乱 / 死信 / Rebalance |
+| 09 | [事务消息与 Outbox](09-transaction-message-outbox.md) | 本地事务 + MQ / Outbox / RocketMQ 事务消息 / 对账补偿 |
 
 ## 跨章高频题
 
@@ -28,6 +30,10 @@
 - 消息积压了怎么办？（→ 07）
 - 怎么实现延时消息？（→ 07）
 - 死信队列怎么用？（→ 07）
+- 消息积压如何排查？为什么扩容消费者不一定有效？（→ 08）
+- 重复消费和消息丢失分别怎么治理？（→ 08）
+- 本地事务提交和 MQ 发送如何保证最终一致？（→ 09）
+- Outbox 和 RocketMQ 事务消息怎么选？（→ 09）
 
 ## 设计原则
 
