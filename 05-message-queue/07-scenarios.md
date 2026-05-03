@@ -494,13 +494,13 @@ flowchart TD
 
 ```bash
 # 看 broker 上 topic 的 offset 范围
-kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server xxx --topic xxx
+kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server broker-1:9092 --topic order-events
 
 # 直接消费（排查发送是否成功）
-kafka-console-consumer --bootstrap-server xxx --topic xxx --from-beginning
+kafka-console-consumer --bootstrap-server broker-1:9092 --topic order-events --from-beginning
 
 # 看消费组 lag
-kafka-consumer-groups --describe --group xxx
+kafka-consumer-groups --bootstrap-server broker-1:9092 --describe --group order-consumer
 
 # 看 broker 日志
 tail -f /var/log/kafka/server.log
