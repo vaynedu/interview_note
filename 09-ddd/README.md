@@ -13,6 +13,7 @@
 | 05 | [CQRS 与事件溯源](05-cqrs-eventsourcing.md) | CQRS / Event Sourcing / Saga / 集成事件 |
 | 06 | [Go 落地](06-go-implementation.md) | 目录结构 + Wire DI + ORM 关系 + 防腐层 + Kratos 风格 |
 | 07 | [反模式与最佳实践](07-anti-patterns-best-practices.md) | 反模式 + 误区 + 与微服务关系 + 落地经验 |
+| 08 | [大厂案例对比](08-industry-cases.md) | 美团 / 阿里 COLA / 腾讯 / 字节 / Shopee 公开实践对比 |
 
 ## 跨章高频题
 
@@ -32,6 +33,7 @@
 - 防腐层（ACL）是什么？（→ 06）
 - DDD 和微服务关系？（→ 01 / 07）
 - 贫血模型 vs 充血模型？（→ 02 / 07）
+- 大厂 DDD 怎么落地？美团/阿里 COLA 风格区别？（→ 08）
 
 ## 设计原则
 
