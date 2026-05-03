@@ -14,6 +14,8 @@
 | 06 | [分布式锁](06-distributed-lock.md) | SETNX / Redlock / 续约 / 公平锁 / 红锁争议 |
 | 07 | [踩坑与调优](07-pitfalls-tuning.md) | 大 key / 热 key / 内存淘汰 8 策略 / 慢查询 / 过期机制 |
 | 08 | [场景实战](08-scenarios.md) | 排行榜 / 计数器 / 限流 / 队列 / 布隆 / 地理 / Pub-Sub / 会话 |
+| 09 | [线上案例](09-production-cases.md) | 热 key / 大 key / 内存打满 / 慢查询 / 阻塞命令 / fork COW |
+| 10 | [缓存一致性](10-cache-consistency-design.md) | Cache Aside / 延迟双删 / binlog 订阅 / 强一致读 / 删除失败重试 |
 
 ## 高频面试题（跨章索引）
 
@@ -27,6 +29,10 @@
 - 内存淘汰 8 种策略？过期 key 是怎么删除的？（→ 07）
 - 怎么用 Redis 做限流？滑动窗口怎么实现？（→ 08）
 - Pipeline 和事务区别？Lua 脚本场景？（→ 跨章）
+- 热 key 和大 key 分别怎么排查和治理？（→ 09）
+- Redis 内存打满、慢查询、fork 抖动怎么处理？（→ 09）
+- 缓存一致性为什么常用先写 DB 再删缓存？（→ 10）
+- 删除缓存失败怎么办？延迟双删和 binlog 订阅怎么选？（→ 10）
 
 ## 设计原则
 
