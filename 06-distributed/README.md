@@ -14,6 +14,8 @@
 | 06 | [限流熔断降级](06-rate-limit-circuit.md) | 4 算法 / 单机 vs 分布式 / Sentinel / Hystrix / 半开 |
 | 07 | [服务发现与负载均衡](07-service-discovery-lb.md) | CP/AP / 一致性 Hash / 算法 / 健康检查 |
 | 08 | [分布式设计模式](08-design-patterns.md) | 幂等 / 重试 / 补偿 / 灰度 / 链路追踪 / 雪崩防护 |
+| 09 | [协调服务对比](09-coordination-services.md) | Redis / ZooKeeper / etcd 对比 / 注册发现 / 配置中心 / 选主 |
+| 10 | [分布式锁场景](10-distributed-lock-cases.md) | 分布式锁工程实践 / 幂等 / fencing token / 线上坑 |
 
 ## 跨章高频题
 
@@ -31,6 +33,10 @@
 - ZK 和 Eureka/Nacos 注册中心怎么选？（→ 07）
 - 怎么实现幂等？（→ 08）
 - 重试为什么会放大雪崩？（→ 08）
+- Redis / ZooKeeper / etcd 除了锁还有哪些协调场景？（→ 09）
+- 配置中心和注册发现为什么需要 watch / lease？（→ 09）
+- 防重复提交一定要用分布式锁吗？（→ 10）
+- 什么是 fencing token？解决什么问题？（→ 10）
 
 ## 设计原则
 
