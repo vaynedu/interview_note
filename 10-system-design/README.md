@@ -29,6 +29,11 @@
 | [13-payment-system.md](13-payment-system.md) | 支付系统：状态机、幂等、渠道回调、对账、补偿 |
 | [14-coupon-system.md](14-coupon-system.md) | 优惠券系统：领券并发、防超领、核销、规则、过期 |
 | [15-inventory-system.md](15-inventory-system.md) | 库存系统：预占、扣减、释放、防超卖、库存分桶 |
+| [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md) | 打车派单系统：地理索引、司机匹配、派单策略、状态一致性 |
+| [17-monitoring-alerting.md](17-monitoring-alerting.md) | 监控告警系统：指标采集、时序存储、规则引擎、告警收敛 |
+| [18-api-gateway.md](18-api-gateway.md) | API 网关：路由、鉴权、限流、熔断、灰度、插件化 |
+| [19-config-center.md](19-config-center.md) | 配置中心：版本、灰度、回滚、长轮询、本地缓存、审计 |
+| [20-log-search-platform.md](20-log-search-platform.md) | 日志检索平台：日志采集、Kafka、ES、冷热存储、权限 |
 
 ## 高频题速览
 
@@ -104,6 +109,14 @@
 - 优惠券核销和退券如何保证幂等？
 - 库存如何预占、扣减、释放，如何防超卖？
 
+### 基础设施 / 调度
+
+- 打车派单如何设计地理索引和司机匹配？
+- 监控告警如何避免告警风暴？
+- API 网关如何做限流、熔断和灰度？
+- 配置中心如何保证发布可回滚、客户端可用？
+- 日志检索平台如何做冷热分层和成本控制？
+
 ### 题库与回答方法
 
 - 经典系统设计题有哪些类型？
@@ -121,7 +134,8 @@
 5. 然后看 [04-realtime-barrage.md](04-realtime-barrage.md) 和 [05-live-streaming.md](05-live-streaming.md)，补齐长连接、实时消息、音视频链路。
 6. 看 [06-feed-system.md](06-feed-system.md)、[08-im-system.md](08-im-system.md)、[09-comment-system.md](09-comment-system.md) 和 [10-like-counter-system.md](10-like-counter-system.md)，理解内容社区、实时通信和计数系统。
 7. 看 [11-search-system.md](11-search-system.md) 和 [12-file-storage-system.md](12-file-storage-system.md)，补齐搜索和文件存储。
-8. 最后看 [13-payment-system.md](13-payment-system.md)、[14-coupon-system.md](14-coupon-system.md) 和 [15-inventory-system.md](15-inventory-system.md)，补齐交易一致性、幂等和对账。
+8. 看 [13-payment-system.md](13-payment-system.md)、[14-coupon-system.md](14-coupon-system.md) 和 [15-inventory-system.md](15-inventory-system.md)，补齐交易一致性、幂等和对账。
+9. 最后看 [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md)、[17-monitoring-alerting.md](17-monitoring-alerting.md)、[18-api-gateway.md](18-api-gateway.md)、[19-config-center.md](19-config-center.md) 和 [20-log-search-platform.md](20-log-search-platform.md)，补齐调度和基础设施类设计题。
 
 ## 答题原则
 
