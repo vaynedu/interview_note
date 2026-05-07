@@ -175,7 +175,7 @@ errors.Is(err, ErrNotFound)  // true
 err == ErrNotFound            // false (被 wrap)
 ```
 
-**原则**：调用链路每一层加自己的上下文（`fmt.Errorf("xxx: %w", err)`），最底层定义 sentinel。
+**原则**：调用链路每一层加自己的上下文（`fmt.Errorf("query user: %w", err)`），最底层定义 sentinel。
 
 **Q5：errors.Is 和 errors.As 什么时候用？**
 
