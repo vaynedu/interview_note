@@ -110,7 +110,7 @@ go build -gcflags="-m=2" ./...
 ```
 
 关键输出：
-- `moved to heap: xxx` — 明确逃逸
+- `moved to heap: p` — 变量 `p` 明确逃逸
 - `escapes to heap` — 表达式逃逸
 - `does not escape` — 没逃逸
 - `inlined` — 被内联
