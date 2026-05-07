@@ -14,16 +14,24 @@
 | [06-performance](06-performance/) | pprof / benchmark / 内存优化 / 线上排查 |
 | [07-ecosystem](07-ecosystem/)     | gin / gorm / grpc / go-zero / kratos |
 
-## 高频题 Top（待整理）
+## 高频题速览
 
 - slice 扩容机制
 - map 为什么不是并发安全
+- Go 到底是不是引用传递
+- 值接收者和指针接收者怎么选
 - channel 底层结构与发送/接收流程
 - GMP 模型与 work-stealing
 - GC 三色标记 + 混合写屏障
+- GC 压力和线上调优
+- goroutine 泄漏排查
 - defer 执行顺序与闭包捕获
 - interface 的 iface / eface
+- 小接口、使用方定义接口
 - context 取消传播机制
+- net/http 超时与连接池
+- JSON 数字精度、omitempty 和大对象内存
+- Go 和 Java/C++ 的设计取舍
 
 ## 文件内部模板
 
