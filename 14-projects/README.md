@@ -11,6 +11,7 @@
 | 02 | [性能优化案例](02-performance-optimization-cases.md) | 慢 SQL、高 CPU、缓存、连接池、P99 优化 |
 | 03 | [线上事故案例](03-production-incident-stories.md) | 事故复盘、止血、根因、长期治理、面试表达 |
 | 04 | [项目复盘模板](04-project-template.md) | 可复制填空模板：项目简介、难点、指标、事故、追问 |
+| 05 | [DDD 订单项目样板](05-ddd-order-example.md) | 用 ddd_order_example 真实项目套模板的完整讲解（个人项目如何包装为简历亮点） |
 
 ## 高频追问
 
@@ -29,6 +30,7 @@
 2. 再看 [01-project-story-framework.md](01-project-story-framework.md)，学会 1 分钟和 5 分钟表达。
 3. 看 [02-performance-optimization-cases.md](02-performance-optimization-cases.md)、[03-production-incident-stories.md](03-production-incident-stories.md)，准备具体案例。
 4. 最后复制 [04-project-template.md](04-project-template.md)，填成自己的简历项目材料。
+5. 参考 [05-ddd-order-example.md](05-ddd-order-example.md) 看个人项目如何包装为简历亮点（大厂方案对比 + 主动暴露不足 + 改进路径）。
 
 ## 复盘原则
 
