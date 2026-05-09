@@ -562,7 +562,7 @@ ZCARD limit:user:1
 # 超过阈值就拒绝
 ```
 
-详见 08。
+详见 [08-scenarios.md](08-scenarios.md)。
 
 **Q8：Pipeline 和事务区别？**
 

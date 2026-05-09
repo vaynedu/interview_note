@@ -659,19 +659,17 @@ NO（用替代）:
 
 ## 十三、关联阅读
 
-```
-本目录:
-- 01-architecture.md          Redis 为什么快（强项）
-- 05-cache-patterns.md        缓存模式的边界
-- 06-distributed-lock.md      锁的一致性争议
-- 09-production-cases.md      真实事故案例
-- 11-multi-tier-cache.md      本地 + Redis 组合
-- 20-go-redis-best-practices.md Go SDK 落地
-- 21-senior-interview-answers.md 答题模板
+本目录：
+- [01-architecture.md](01-architecture.md) — Redis 为什么快（强项）
+- [05-cache-patterns.md](05-cache-patterns.md) — 缓存模式的边界
+- [06-distributed-lock.md](06-distributed-lock.md) — 锁的一致性争议
+- [09-production-cases.md](09-production-cases.md) — 真实事故案例
+- [11-multi-tier-cache.md](11-multi-tier-cache.md) — 本地 + Redis 组合
+- [20-go-redis-best-practices.md](20-go-redis-best-practices.md) — Go SDK 落地
+- [21-senior-interview-answers.md](21-senior-interview-answers.md) — 答题模板
 
-跨模块:
-- 03-mysql/00-mysql-map.md    MySQL 能力
-- 05-message-queue/00-mq-map.md MQ 能力对比
-- 06-distributed/04-lock.md   三方锁对比
-- 06-distributed/03-transaction.md 分布式事务
-```
+跨模块：
+- [../03-mysql/00-mysql-map.md](../03-mysql/00-mysql-map.md) — MySQL 能力
+- [../05-message-queue/00-mq-map.md](../05-message-queue/00-mq-map.md) — MQ 能力对比
+- [../06-distributed/04-lock.md](../06-distributed/04-lock.md) — 三方锁对比
+- [../06-distributed/03-transaction.md](../06-distributed/03-transaction.md) — 分布式事务

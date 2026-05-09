@@ -78,7 +78,7 @@ SADD uv:page:1:20240101 userid_1 userid_2 ...
 SCARD uv:page:1:20240101
 ```
 
-**有损但极省**：HyperLogLog（详见 02）
+**有损但极省**：HyperLogLog（详见 [02-data-structures.md](02-data-structures.md)）
 
 ```bash
 PFADD uv:page:1:20240101 userid_1 userid_2 ...
@@ -338,7 +338,7 @@ XACK orders consumer1 message_id
 
 ### 6.1 用途
 
-防止缓存穿透（详见 05）：判断"key 一定不存在"。
+防止缓存穿透（详见 [05-cache-patterns.md](05-cache-patterns.md)）：判断"key 一定不存在"。
 
 ### 6.2 实现
 

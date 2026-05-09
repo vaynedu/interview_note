@@ -579,7 +579,7 @@ Smart Client（go-redis 等）支持配置 `RouteRandomly` / `RouteByLatency`。
 - 用 hash tag 让相关 key 同 slot
 - 业务上拆事务（先 A 节点的，再 B 节点的，自己处理一致性）
 - 用 Lua 脚本（脚本内的 key 也必须同 slot）
-- 重要场景上 RedLock（详见 06）
+- 重要场景上 RedLock（详见 [06-distributed-lock.md](06-distributed-lock.md)）
 
 ## 八、面试加分点
 

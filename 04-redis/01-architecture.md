@@ -267,14 +267,16 @@ typedef struct redisObject {
 } robj;
 ```
 
-→ 详见 `02-data-structures.md`。
+→ 详见 [02-data-structures.md](02-data-structures.md)。
 
 ### 5.3 内存上限
 
 ```
-maxmemory 4gb           # 最大内存
-maxmemory-policy allkeys-lru  # 满了怎么办 (8 种策略, 详见 07)
+maxmemory 4gb                 # 最大内存
+maxmemory-policy allkeys-lru  # 满了怎么办（8 种策略）
 ```
+
+淘汰策略详见 [07-pitfalls-tuning.md](07-pitfalls-tuning.md)。
 
 ## 六、单实例瓶颈与扩展
 
@@ -299,7 +301,7 @@ flowchart TB
     E --> I[充分利用多核]
 ```
 
-详见 `04-replication-cluster.md`。
+详见 [04-replication-cluster.md](04-replication-cluster.md)。
 
 ## 七、核心配置速览
 
@@ -360,7 +362,7 @@ flowchart TB
 | `FLUSHDB/FLUSHALL` | 慎用，加 `ASYNC` |
 | 大 Lua 脚本 | 拆分 |
 
-排查：`SLOWLOG GET 10`（详见 07）。
+排查：`SLOWLOG GET 10`（详见 [07-pitfalls-tuning.md](07-pitfalls-tuning.md)）。
 
 **Q6：Redis 适合什么场景，不适合什么？**
 

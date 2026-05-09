@@ -1137,21 +1137,18 @@ redis.NewClusterClient(&redis.ClusterOptions{
 
 ## 十七、关联阅读
 
-```
-本目录:
-- 05-cache-patterns.md     缓存模式
-- 06-distributed-lock.md   分布式锁（配合 Lua）
-- 07-pitfalls-tuning.md    大 key / 热 key 治理
-- 09-production-cases.md   生产事故案例
-- 10-cache-consistency-design.md 一致性方案
-- 11-multi-tier-cache.md   多级缓存（本地缓存选型对比）
+本目录：
+- [05-cache-patterns.md](05-cache-patterns.md) — 缓存模式
+- [06-distributed-lock.md](06-distributed-lock.md) — 分布式锁（配合 Lua）
+- [07-pitfalls-tuning.md](07-pitfalls-tuning.md) — 大 key / 热 key 治理
+- [09-production-cases.md](09-production-cases.md) — 生产事故案例
+- [10-cache-consistency-design.md](10-cache-consistency-design.md) — 一致性方案
+- [11-multi-tier-cache.md](11-multi-tier-cache.md) — 多级缓存（本地缓存选型对比）
 
-Go 相关:
-- 01-go/06-goroutine-concurrency.md  并发原语
-- 01-go/... singleflight / errgroup
+Go 相关：
+- [../01-go-language/](../01-go-language/) — Go 并发原语 / singleflight / errgroup
 
-跨模块:
-- 06-distributed/04-lock.md      三方锁对比
-- 06-distributed/06-rate-limit-circuit.md 限流熔断
-- 13-engineering/04-observability-integration.md 可观测
-```
+跨模块：
+- [../06-distributed/04-lock.md](../06-distributed/04-lock.md) — 三方锁对比
+- [../06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md) — 限流熔断
+- [../13-engineering/04-observability-integration.md](../13-engineering/04-observability-integration.md) — 可观测

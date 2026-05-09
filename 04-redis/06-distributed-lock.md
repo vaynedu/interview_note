@@ -337,7 +337,7 @@ func cron(ctx context.Context) {
 
 每个实例都跑这段代码，但只有一个能拿到锁。
 
-### 7.3 缓存击穿（详见 05）
+### 7.3 缓存击穿（详见 [05-cache-patterns.md](05-cache-patterns.md)）
 
 ```go
 v, err := cache.Get(key)

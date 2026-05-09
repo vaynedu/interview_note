@@ -805,42 +805,37 @@ maxclients = 应用实例数 × 每实例连接池大小 × 1.5
 
 ## 十三、高频 20 问速答索引
 
-```
-架构 / 原理:
-Q1: Redis 为什么快？            → 二
-Q2: 单线程怎么抗高并发？        → 二 + 17 / 18
-Q3: 5 种数据结构底层？          → 17
-Q4: RDB vs AOF 怎么选？         → 03
-Q5: 主从同步流程？              → 04
-Q6: Cluster 16384 怎么来的？    → 04
-
-缓存:
-Q7: 缓存一致性怎么保？          → 五 + 10
-Q8: 缓存穿透/击穿/雪崩？        → 十
-Q9: 多级缓存怎么设计？          → 四 + 11
-Q10: 本地缓存选型？             → 11
-
-分布式:
-Q11: Redis 分布式锁？           → 八 + 06
-Q12: Redlock 争议？             → 八
-Q13: Redis vs etcd 锁？         → 八 + 19
-
-调优:
-Q14: 内存淘汰 8 策略？          → 三 + 07
-Q15: 热 key / 大 key？          → 九 + 07
-Q16: 慢查询排查？               → 七
-Q17: Redis 内存打满？           → 七 + 09
-
-线上问题:
-Q18: 故障切换？                 → 六 + 15
-Q19: 缓存雪崩应急？             → 十 + 09
-Q20: 容量规划？                 → 十一
-
-Go 实战:
-Q21: 连接池怎么调？             → 20
-Q22: Pipeline / Lua？           → 20
-Q23: 熔断 fallback？            → 20
-```
+| # | 问题 | 跳转 |
+| --- | --- | --- |
+| **架构 / 原理** | | |
+| Q1 | Redis 为什么快？ | 本文第二节 |
+| Q2 | 单线程怎么抗高并发？ | 本文第二节 + [17-object-encoding-internals.md](17-object-encoding-internals.md) / [18-eventloop-memory-internals.md](18-eventloop-memory-internals.md) |
+| Q3 | 5 种数据结构底层？ | [17-object-encoding-internals.md](17-object-encoding-internals.md) |
+| Q4 | RDB vs AOF 怎么选？ | [03-persistence.md](03-persistence.md) |
+| Q5 | 主从同步流程？ | [04-replication-cluster.md](04-replication-cluster.md) |
+| Q6 | Cluster 16384 怎么来的？ | [04-replication-cluster.md](04-replication-cluster.md) |
+| **缓存** | | |
+| Q7 | 缓存一致性怎么保？ | 本文第五节 + [10-cache-consistency-design.md](10-cache-consistency-design.md) |
+| Q8 | 缓存穿透 / 击穿 / 雪崩？ | 本文第十节 |
+| Q9 | 多级缓存怎么设计？ | 本文第四节 + [11-multi-tier-cache.md](11-multi-tier-cache.md) |
+| Q10 | 本地缓存选型？ | [11-multi-tier-cache.md](11-multi-tier-cache.md) |
+| **分布式** | | |
+| Q11 | Redis 分布式锁？ | 本文第八节 + [06-distributed-lock.md](06-distributed-lock.md) |
+| Q12 | Redlock 争议？ | 本文第八节 |
+| Q13 | Redis vs etcd 锁？ | 本文第八节 + [19-redis-design-tradeoffs.md](19-redis-design-tradeoffs.md) |
+| **调优** | | |
+| Q14 | 内存淘汰 8 策略？ | 本文第三节 + [07-pitfalls-tuning.md](07-pitfalls-tuning.md) |
+| Q15 | 热 key / 大 key？ | 本文第九节 + [07-pitfalls-tuning.md](07-pitfalls-tuning.md) |
+| Q16 | 慢查询排查？ | 本文第七节 |
+| Q17 | Redis 内存打满？ | 本文第七节 + [09-production-cases.md](09-production-cases.md) |
+| **线上问题** | | |
+| Q18 | 故障切换？ | 本文第六节 + [15-cluster-failover-cases.md](15-cluster-failover-cases.md) |
+| Q19 | 缓存雪崩应急？ | 本文第十节 + [09-production-cases.md](09-production-cases.md) |
+| Q20 | 容量规划？ | 本文第十一节 |
+| **Go 实战** | | |
+| Q21 | 连接池怎么调？ | [20-go-redis-best-practices.md](20-go-redis-best-practices.md) |
+| Q22 | Pipeline / Lua？ | [20-go-redis-best-practices.md](20-go-redis-best-practices.md) |
+| Q23 | 熔断 fallback？ | [20-go-redis-best-practices.md](20-go-redis-best-practices.md) |
 
 ---
 
@@ -887,26 +882,24 @@ Q23: 熔断 fallback？            → 20
 
 ## 十六、关联阅读
 
-```
-本目录:
-- 00-redis-map.md             总览
-- 01-architecture.md          为什么快（详细）
-- 02-data-structures.md       数据结构
-- 05-cache-patterns.md        缓存模式
-- 06-distributed-lock.md      分布式锁
-- 07-pitfalls-tuning.md       调优
-- 09-production-cases.md      线上案例
-- 10-cache-consistency-design.md 一致性
-- 11-multi-tier-cache.md      多级缓存
-- 15-cluster-failover-cases.md 集群故障
-- 16-redis-cluster-operability.md 集群运维
-- 17-object-encoding-internals.md 源码对象
-- 18-eventloop-memory-internals.md 源码事件循环
-- 19-redis-design-tradeoffs.md 设计边界
-- 20-go-redis-best-practices.md Go 实战
+本目录：
+- [00-redis-map.md](00-redis-map.md) — 总览
+- [01-architecture.md](01-architecture.md) — 为什么快（详细）
+- [02-data-structures.md](02-data-structures.md) — 数据结构
+- [05-cache-patterns.md](05-cache-patterns.md) — 缓存模式
+- [06-distributed-lock.md](06-distributed-lock.md) — 分布式锁
+- [07-pitfalls-tuning.md](07-pitfalls-tuning.md) — 调优
+- [09-production-cases.md](09-production-cases.md) — 线上案例
+- [10-cache-consistency-design.md](10-cache-consistency-design.md) — 一致性
+- [11-multi-tier-cache.md](11-multi-tier-cache.md) — 多级缓存
+- [15-cluster-failover-cases.md](15-cluster-failover-cases.md) — 集群故障
+- [16-redis-cluster-operability.md](16-redis-cluster-operability.md) — 集群运维
+- [17-object-encoding-internals.md](17-object-encoding-internals.md) — 源码对象
+- [18-eventloop-memory-internals.md](18-eventloop-memory-internals.md) — 源码事件循环
+- [19-redis-design-tradeoffs.md](19-redis-design-tradeoffs.md) — 设计边界
+- [20-go-redis-best-practices.md](20-go-redis-best-practices.md) — Go 实战
 
-跨模块:
-- 06-distributed/04-lock.md   三方锁
-- 03-mysql/00-mysql-map.md    MySQL 配合
-- 99-meta/redis-20.md         速记题集
-```
+跨模块：
+- [../06-distributed/04-lock.md](../06-distributed/04-lock.md) — 三方锁
+- [../03-mysql/00-mysql-map.md](../03-mysql/00-mysql-map.md) — MySQL 配合
+- [../99-meta/redis-20.md](../99-meta/redis-20.md) — 速记题集

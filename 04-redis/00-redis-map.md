@@ -479,69 +479,63 @@ INFO clients      # blocked_clients
 
 ### 8.1 入门 → 资深
 
-```
-Week 1: 基础
-  01 architecture
-  02 data-structures
-  03 persistence
+**Week 1: 基础**
+- [01-architecture.md](01-architecture.md)
+- [02-data-structures.md](02-data-structures.md)
+- [03-persistence.md](03-persistence.md)
 
-Week 2: 高可用
-  04 replication-cluster
-  + 部署单机/主从/Cluster 实操
+**Week 2: 高可用**
+- [04-replication-cluster.md](04-replication-cluster.md)
+- 部署单机 / 主从 / Cluster 实操
 
-Week 3: 缓存核心
-  05 cache-patterns
-  10 cache-consistency-design
-  11 multi-tier-cache
+**Week 3: 缓存核心**
+- [05-cache-patterns.md](05-cache-patterns.md)
+- [10-cache-consistency-design.md](10-cache-consistency-design.md)
+- [11-multi-tier-cache.md](11-multi-tier-cache.md)
 
-Week 4: 分布式锁
-  06 distributed-lock
-  ../06-distributed/04-lock
+**Week 4: 分布式锁**
+- [06-distributed-lock.md](06-distributed-lock.md)
+- [../06-distributed/04-lock.md](../06-distributed/04-lock.md)
 
-Week 5: 调优 + 场景
-  07 pitfalls-tuning
-  08 scenarios
+**Week 5: 调优 + 场景**
+- [07-pitfalls-tuning.md](07-pitfalls-tuning.md)
+- [08-scenarios.md](08-scenarios.md)
 
-Week 6: 实战
-  09 production-cases
-  ../10-system-design/16-high-concurrency-scenarios
+**Week 6: 实战**
+- [09-production-cases.md](09-production-cases.md)
+- [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
 
-Week 7: 综合 + 索引
-  ../99-meta/redis-20
-  ../99-meta/01-cross-topic-index
-```
+**Week 7: 综合 + 索引**
+- [../99-meta/redis-20.md](../99-meta/redis-20.md)
+- [../99-meta/01-cross-topic-index.md](../99-meta/01-cross-topic-index.md)
 
 ### 8.2 面试前 1 周快速过
 
-```
-1 天: 99-meta/redis-20（背诵版 + 标准答案）
-1 天: 04-redis/05 缓存模式 + 10 一致性
-1 天: 04-redis/06 分布式锁 + ../06-distributed/04 三方对比
-1 天: 04-redis/07 调优 + 09 案例
-1 天: 04-redis/08 场景
-1 天: 综合场景串联（10-system-design/16）
-1 天: 模拟面试
-```
+- Day 1：[../99-meta/redis-20.md](../99-meta/redis-20.md)（背诵版 + 标准答案）
+- Day 2：[05-cache-patterns.md](05-cache-patterns.md) + [10-cache-consistency-design.md](10-cache-consistency-design.md)
+- Day 3：[06-distributed-lock.md](06-distributed-lock.md) + [../06-distributed/04-lock.md](../06-distributed/04-lock.md) 三方对比
+- Day 4：[07-pitfalls-tuning.md](07-pitfalls-tuning.md) + [09-production-cases.md](09-production-cases.md)
+- Day 5：[08-scenarios.md](08-scenarios.md)
+- Day 6：综合场景串联 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
+- Day 7：模拟面试
 
 ### 8.3 大厂特化
 
-```
-字节系（高并发）:
-  重点 06-lock / 08-scenarios / 11-multi-tier-cache
-  + 自己跑一下 Lua 脚本压测
+**字节系（高并发）**
+- 重点 [06-distributed-lock.md](06-distributed-lock.md) / [08-scenarios.md](08-scenarios.md) / [11-multi-tier-cache.md](11-multi-tier-cache.md)
+- 自己跑一下 Lua 脚本压测
 
-阿里系（中台）:
-  重点 04-cluster / 10-consistency / 多活 Redis
-  + Tair（阿里自研 Redis）了解
+**阿里系（中台）**
+- 重点 [04-replication-cluster.md](04-replication-cluster.md) / [10-cache-consistency-design.md](10-cache-consistency-design.md) / 多活 Redis
+- Tair（阿里自研 Redis）了解
 
-美团 / 拼多多（电商）:
-  重点 08-scenarios（秒杀/限流/排行）/ 10-consistency
-  + 双 11 容量规划
+**美团 / 拼多多（电商）**
+- 重点 [08-scenarios.md](08-scenarios.md)（秒杀 / 限流 / 排行）/ [10-cache-consistency-design.md](10-cache-consistency-design.md)
+- 双 11 容量规划
 
-金融 / 银行（强一致）:
-  重点 06-lock 但要质疑 Redis 强一致
-  + 推荐用 etcd / ZK 替代
-```
+**金融 / 银行（强一致）**
+- 重点 [06-distributed-lock.md](06-distributed-lock.md) 但要质疑 Redis 强一致
+- 推荐用 etcd / ZK 替代
 
 ---
 
@@ -711,36 +705,32 @@ flowchart TB
 
 ## 十四、推荐阅读路径（一站式）
 
-```
-入门:
-  □ Redis 官方文档（5 种数据结构）
-  □ 黄健宏《Redis 设计与实现》
-  □ 04-redis/01-04（架构 / 数据结构 / 持久化 / 集群）
+**入门**
+- Redis 官方文档（5 种数据结构）
+- 黄健宏《Redis 设计与实现》
+- 本目录：[01-architecture.md](01-architecture.md) / [02-data-structures.md](02-data-structures.md) / [03-persistence.md](03-persistence.md) / [04-replication-cluster.md](04-replication-cluster.md)
 
-进阶:
-  □ Redis Cluster spec
-  □ Antirez 博客（Redis 作者）
-  □ 04-redis/05-08（缓存 / 锁 / 调优 / 场景）
+**进阶**
+- Redis Cluster spec
+- Antirez 博客（Redis 作者）
+- 本目录：[05-cache-patterns.md](05-cache-patterns.md) / [06-distributed-lock.md](06-distributed-lock.md) / [07-pitfalls-tuning.md](07-pitfalls-tuning.md) / [08-scenarios.md](08-scenarios.md)
 
-资深:
-  □ Martin Kleppmann《How to do distributed locking》
-  □ 阿里 Tair / 字节 Abase 设计
-  □ 04-redis/09-11（案例 / 一致性 / 多级缓存）
-  □ 99-meta/redis-20（速记题集）
+**资深**
+- Martin Kleppmann《How to do distributed locking》
+- 阿里 Tair / 字节 Abase 设计
+- 本目录：[09-production-cases.md](09-production-cases.md) / [10-cache-consistency-design.md](10-cache-consistency-design.md) / [11-multi-tier-cache.md](11-multi-tier-cache.md)
+- [../99-meta/redis-20.md](../99-meta/redis-20.md)（速记题集）
 
-实战:
-  □ 自己部署主从 / 哨兵 / Cluster
-  □ 跑 redis-benchmark
-  □ 用 redis-cli --bigkeys / --hotkeys
-  □ 模拟故障演练
-```
+**实战**
+- 自己部署主从 / 哨兵 / Cluster
+- 跑 redis-benchmark
+- 用 redis-cli --bigkeys / --hotkeys
+- 模拟故障演练
 
 ---
 
 ## 十五、与 99-meta 的关联
 
-```
-背诵 + 速记: 99-meta/redis-20.md
-跨主题索引: 99-meta/01-cross-topic-index.md（缓存专题）
-综合实战:   10-system-design/16-high-concurrency-scenarios.md
-```
+- 背诵 + 速记：[../99-meta/redis-20.md](../99-meta/redis-20.md)
+- 跨主题索引：[../99-meta/01-cross-topic-index.md](../99-meta/01-cross-topic-index.md)（缓存专题）
+- 综合实战：[../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
