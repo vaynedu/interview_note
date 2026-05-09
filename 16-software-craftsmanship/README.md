@@ -6,6 +6,10 @@
 >
 > Go 实战导向：每个概念都有 Go 代码 / 标准库 / 主流项目（K8s / etcd / Kratos / gRPC / Kitex）真实案例
 
+## ★ 总览地图
+
+> **新人/复习者优先看** [00-craftsmanship-map.md](00-craftsmanship-map.md)：知识树 / 5 层工艺 / 设计模式 / 重构手法 / 答题模板。
+
 ## 目录
 
 | # | 文件 | 涵盖 |
