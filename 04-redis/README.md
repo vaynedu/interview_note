@@ -22,6 +22,7 @@
 | 09 | [线上案例](09-production-cases.md) | 热 key / 大 key / 内存打满 / 慢查询 / 阻塞命令 / fork COW |
 | 10 | [缓存一致性](10-cache-consistency-design.md) | Cache Aside / 延迟双删 / binlog 订阅 / 强一致读 / 删除失败重试 |
 | 11 | [多级缓存](11-multi-tier-cache.md) | 多级缓存 + Go 本地缓存对比（Ristretto/BigCache/freecache）+ 热点检测 |
+| 20 | [Go Redis 最佳实践](20-go-redis-best-practices.md) | go-redis 连接池 / 超时分层 / Pipeline / Lua / Hook 埋点 / 熔断 fallback / 热 key SDK / 多级缓存组件 / 反模式 |
 
 ## 高频面试题（跨章索引）
 
@@ -40,6 +41,10 @@
 - 缓存一致性为什么常用先写 DB 再删缓存？（→ 10）
 - 删除缓存失败怎么办？延迟双删和 binlog 订阅怎么选？（→ 10）
 - 多级缓存怎么设计？本地缓存 Ristretto/BigCache 怎么选？（→ 11）
+- go-redis 连接池 PoolSize 怎么调？ConnMaxLifetime 为什么要设？（→ 20）
+- Pipeline 在 Go 里怎么封装？Cluster 跨 slot 怎么办？（→ 20）
+- Redis 挂了业务怎么办？熔断 + fallback 怎么包一层 SDK？（→ 20）
+- 热 key 在 Go 服务里怎么实现保护？singleflight 用过吗？（→ 20）
 
 ## 学习顺序
 
@@ -48,8 +53,9 @@
 3. 学 05-06 学**核心场景**（缓存 / 锁）
 4. 学 07-08 学**调优 + 实战场景**
 5. 学 09-11 学**资深题**（生产事故 / 一致性 / 多级缓存）
-6. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
-7. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
+6. 学 20 落地**Go SDK 工程化**（连接池 / 超时 / 埋点 / 熔断 / 热 key）
+7. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
+8. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
 
 ## 设计原则
 
