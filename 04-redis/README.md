@@ -26,7 +26,9 @@
 | 16 | [集群运维治理](16-redis-cluster-operability.md) | 拓扑/容量规划 / 关键配置 / 扩缩容与迁移流程 / 客户端治理 / 监控告警 / 演练复盘 |
 | 17 | [源码深水区：对象与编码](17-object-encoding-internals.md) | redisObject / SDS / 编码升级 / quicklist / skiplist / 渐进式 rehash |
 | 18 | [源码深水区：事件循环与内存](18-eventloop-memory-internals.md) | 事件循环 / IO threads / BIO / 过期循环 / LFU 近似 / 碎片与 jemalloc |
+| 19 | [设计边界与取舍](19-redis-design-tradeoffs.md) | Redis 适合/不适合 / vs MySQL/MQ/etcd/本地缓存 / 10 大反模式 / 决策树 |
 | 20 | [Go Redis 最佳实践](20-go-redis-best-practices.md) | go-redis 连接池 / 超时分层 / Pipeline / Lua / Hook 埋点 / 熔断 fallback / 热 key SDK / 多级缓存组件 / 反模式 |
+| 21 | [资深答题模板](21-senior-interview-answers.md) | 四段答题法 / LRU/LFU 近似 / 一致性三档 / 集群故障讲法 / 线上排查流程 / 20 问速答索引 |
 
 ## 高频面试题（跨章索引）
 
@@ -51,6 +53,12 @@
 - Pipeline 在 Go 里怎么封装？Cluster 跨 slot 怎么办？（→ 20）
 - Redis 挂了业务怎么办？熔断 + fallback 怎么包一层 SDK？（→ 20）
 - 热 key 在 Go 服务里怎么实现保护？singleflight 用过吗？（→ 20）
+- Redis 不适合做什么？为什么不能当数据库？（→ 19）
+- Redis vs MySQL / MQ / etcd / 本地缓存 怎么选？（→ 19）
+- 10 大危险反模式是什么？（→ 19）
+- LRU 和 LFU 为什么是"近似"算法？（→ 21）
+- 缓存一致性有哪几档方案？怎么讲？（→ 21）
+- 面试怎么答才算"资深"？（→ 21）
 
 ## 学习顺序
 
@@ -60,8 +68,10 @@
 4. 学 07-08 学**调优 + 实战场景**
 5. 学 09-11 学**资深题**（生产事故 / 一致性 / 多级缓存）
 6. 学 15-18 学**资深追问：高可用 + 源码**（故障/运维治理 + 事件循环/内存/编码）
-7. 学 20 落地**Go SDK 工程化**（连接池 / 超时 / 埋点 / 熔断 / 热 key）
-8. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
+7. 学 19 补**设计边界**（何时不用 Redis / 反模式）
+8. 学 20 落地**Go SDK 工程化**（连接池 / 超时 / 埋点 / 熔断 / 热 key）
+9. 学 21 练**资深答题模板**（四段式 / 20 问速答）
+10. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
 9. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
 
 ## 设计原则
