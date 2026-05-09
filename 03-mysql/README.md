@@ -50,7 +50,16 @@
 | --- | --- |
 | [08-comparison.md](08-comparison.md) | 高频概念对比：锁、日志、索引、复制、分表、缓存 |
 | [10-production-cases.md](10-production-cases.md) | 线上案例：慢 SQL、主从延迟、死锁、DDL、误删、连接池 |
-| [16-go-mysql-practice.md](16-go-mysql-practice.md) | Go 使用 MySQL 实战：database/sql、连接池、事务、超时、Rows 关闭 |
+| [16-go-mysql-practice.md](16-go-mysql-practice.md) | **Go MySQL 工程实战（深度）**：database/sql 公式 / Context KILL / GORM 深度 / sqlx / 读写分离 / 批量 / 埋点 / 重试 / 5 事故 / 10 反模式 |
+
+### 资深进阶（P7+ 必看）
+
+| 文件 | 内容 |
+| --- | --- |
+| [20-mysql-senior-answers.md](20-mysql-senior-answers.md) | **资深答题模板**：四段式答题法 / B+ 树 / MVCC / 两阶段提交 / Next-Key / WRITESET / Online DDL / 深分页 / 20 问速答索引 |
+| [21-mysql-design-tradeoffs.md](21-mysql-design-tradeoffs.md) | **设计边界与取舍**：MySQL 适合/不适合 / vs PG/TiDB/Mongo/ES/CH/HBase / 容量红线 / RR vs RC / 10 大反模式 / 决策树 |
+| [22-innodb-internals.md](22-innodb-internals.md) | **InnoDB 源码深水区**：Page / Latch / Mini-Transaction / B+ 树 SMO / Latch Coupling / Next-Key 算法 / undo + purge / Change Buffer / AHI / redo LSN |
+| [23-antipatterns-dangerous-ops.md](23-antipatterns-dangerous-ops.md) | **反模式与危险操作**：P0/P1/P2 分级 / 大事务 / 长事务 / MDL 雪崩 / 误删恢复 / 索引失效 / 设计反模式 / 5 真实事故 |
 
 ## 高频题速览
 
