@@ -266,3 +266,645 @@ go func() { ch <- 1 }()
 - chan + ctx 是 goroutine 控制的标准组合
 - 用 `select { case x: ... default: ... }` 实现 non-blocking 操作
 - nil chan 屏蔽 select case 是个 trick（动态启用/禁用某路）
+
+## 六、源码深读（runtime/chan.go）
+
+### 6.1 sudog：等待队列节点
+
+```go
+// runtime/runtime2.go
+type sudog struct {
+    g        *g              // 被挂起的 goroutine
+    next     *sudog          // 链表指针
+    prev     *sudog
+    elem     unsafe.Pointer  // 指向待发送 / 接收的数据
+    c        *hchan          // 关联的 chan
+    isSelect bool            // 是否来自 select
+    success  bool            // 被唤醒时是否成功接收（close 时为 false）
+    waitlink *sudog          // 用于多 sudog 场景
+    ...
+}
+
+type waitq struct {
+    first *sudog
+    last  *sudog
+}
+```
+
+**关键**：每个阻塞在 channel 上的 goroutine 会被包装成 sudog，挂到 sendq 或 recvq。sudog 复用（sync.Pool）减少分配。
+
+### 6.2 chansend 关键路径（有删减）
+
+```go
+func chansend(c *hchan, ep unsafe.Pointer, block bool, ...) bool {
+    // 1. nil chan
+    if c == nil {
+        if !block { return false }
+        gopark(...)  // 永久阻塞
+    }
+
+    // 2. 快速路径：非阻塞 + chan 未关闭 + 无法发送
+    if !block && c.closed == 0 && full(c) {
+        return false
+    }
+
+    lock(&c.lock)
+
+    // 3. 已关闭 → panic
+    if c.closed != 0 {
+        unlock(&c.lock)
+        panic("send on closed channel")
+    }
+
+    // 4. recvq 有等待者 → 直接拷贝到对方栈（绕过 buf，零拷贝）
+    if sg := c.recvq.dequeue(); sg != nil {
+        send(c, sg, ep, ...)  // 把 ep 数据拷到 sg.elem
+        return true
+    }
+
+    // 5. buf 未满 → 写入 buf
+    if c.qcount < c.dataqsiz {
+        qp := chanbuf(c, c.sendx)
+        typedmemmove(c.elemtype, qp, ep)
+        c.sendx++
+        if c.sendx == c.dataqsiz { c.sendx = 0 }
+        c.qcount++
+        unlock(&c.lock)
+        return true
+    }
+
+    // 6. buf 满 / 无缓冲 + 无接收方 → 阻塞
+    if !block {
+        unlock(&c.lock)
+        return false
+    }
+
+    // 当前 g 包装成 sudog 入 sendq
+    gp := getg()
+    mysg := acquireSudog()
+    mysg.elem = ep
+    mysg.g = gp
+    c.sendq.enqueue(mysg)
+    gopark(chanparkcommit, ...)  // 让出 P
+
+    // 被唤醒后：如果是被 close 唤醒，panic
+    if !mysg.success {
+        panic("send on closed channel")
+    }
+    releaseSudog(mysg)
+    return true
+}
+```
+
+### 6.3 chanrecv 关键路径
+
+对称：
+- 已关闭且 buf 空 → 返回零值 + ok=false（不 panic）
+- sendq 有等待者：
+  - 有 buf：从 buf[recvx] 取，把 sudog 数据搬到 buf 末尾
+  - 无 buf：直接从 sudog.elem 拷贝
+- buf 非空 → 从 buf[recvx] 取
+- buf 空 → 入 recvq 阻塞
+
+### 6.4 closechan 关键路径
+
+```go
+func closechan(c *hchan) {
+    if c == nil { panic("close of nil channel") }
+    lock(&c.lock)
+    if c.closed != 0 {
+        unlock(&c.lock)
+        panic("close of closed channel")
+    }
+    c.closed = 1
+
+    // 1. 唤醒所有 recvq（它们拿零值，success=false，ok=false）
+    var glist gList
+    for {
+        sg := c.recvq.dequeue()
+        if sg == nil { break }
+        if sg.elem != nil {
+            typedmemclr(c.elemtype, sg.elem)  // 写零值
+        }
+        sg.success = false
+        glist.push(sg.g)
+    }
+
+    // 2. 唤醒所有 sendq（它们 panic）
+    for {
+        sg := c.sendq.dequeue()
+        if sg == nil { break }
+        sg.success = false  // 被唤醒后会 panic
+        glist.push(sg.g)
+    }
+
+    unlock(&c.lock)
+
+    // 3. 批量唤醒 goroutine
+    for !glist.empty() {
+        gp := glist.pop()
+        goready(gp, ...)
+    }
+}
+```
+
+**关键认知**：
+- close 不释放 hchan 内存（由 GC）
+- close 会唤醒所有等待者（批量 goready 减少唤醒开销）
+- 唤醒后 recvq 拿零值，sendq 触发 panic
+
+### 6.5 select 的 selectgo（简化版）
+
+```go
+func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
+    // 1. 两套乱序：pollOrder（轮询顺序，fastrand 打乱）+ lockOrder（加锁顺序，地址排序防死锁）
+
+    // 2. 按 lockOrder 加锁所有相关 chan
+
+    // 3. 第一轮：按 pollOrder 扫描，找就绪的 case 立即执行
+    //    找到 → 解锁 + 返回
+    //    都没就绪 + 有 default → 走 default
+
+    // 4. 把当前 g 包装成 sudog，挂到所有相关 chan 的 sendq/recvq
+    //    gopark 挂起
+
+    // 5. 被唤醒：某个 chan 有动静
+    //    清理其他 chan 的 sudog
+    //    执行对应 case
+}
+```
+
+**性能要点**：
+- 编译器对 1 case + default 优化为 `selectnbsend/selectnbrecv`（绕过 selectgo）
+- N 个 case 时间复杂度 O(N)，大多场景够用
+- **地址排序加锁** 避免不同 select 间的死锁（两个 select 用了同一批 chan）
+
+### 6.6 直接 g-to-g 拷贝（零拷贝优化）
+
+最能体现 Go 设计的地方：
+
+```
+场景：goroutine A 发送，goroutine B 正在 recvq 等待
+
+传统做法:
+  A → buf → B（两次拷贝）
+
+Go 做法:
+  A → B.sudog.elem（一次拷贝，绕过 buf）
+  同时唤醒 B
+
+优势:
+  - 减少一次拷贝
+  - 不占用 buf 空间
+  - 少一次加锁
+```
+
+这就是为什么无缓冲 channel 在"有等待方"场景下比 buffered 还快。
+
+### 6.7 hchan 内存布局
+
+```
+[hchan 头部（约 96 字节）] [buf 环形缓冲区 cap × elemsize]
+
+整体在一次分配里（减少 GC 压力）
+buf 在 hchan 之后连续排列
+```
+
+`make(chan int, 100)` 分配 ≈ 96 + 100 × 8 = 896 字节，一次分配。
+
+## 七、性能与选型
+
+### 7.1 channel vs mutex 性能对比
+
+**微基准**（Intel i7，Go 1.22，GOMAXPROCS=8）：
+
+| 操作 | 耗时 | 相对 |
+| --- | --- | --- |
+| 原子 atomic.AddInt64 | ~1 ns | 1x |
+| Mutex Lock/Unlock（无竞争） | ~20 ns | 20x |
+| Mutex Lock/Unlock（高竞争） | 100-1000 ns | 100-1000x |
+| Buffered chan send+recv（无阻塞） | ~50 ns | 50x |
+| Unbuffered chan（有等待方） | ~200 ns | 200x |
+| Unbuffered chan（需挂起唤醒） | ~1 μs+ | 1000x+ |
+
+**结论**：
+- **频繁读写共享状态用 atomic / Mutex**，不要用 channel
+- **跨 goroutine 数据流 / 控制流用 channel**
+
+### 7.2 Buffered vs Unbuffered 选择
+
+| 场景 | 推荐 |
+| --- | --- |
+| **严格同步**（完成交接后才继续） | unbuffered |
+| **所有权移交**（值传完就安全） | unbuffered |
+| **削峰填谷**（生产消费速度差） | buffered（容量 = 预期突发） |
+| **信号通知**（done / shutdown） | `chan struct{}`（buf=0 或 1） |
+| **固定并发度**（worker pool） | buffered（容量 = worker 数） |
+| **避免生产者阻塞** | buffered（容量足够） |
+
+**缓冲大小的坑**：
+- 过大 → 掩盖同步问题 + 内存浪费 + 积压时延迟巨大
+- 过小 → 生产者频繁阻塞
+- **常见错误选 1**（看似 unbuffered 替代品，实际行为不同）
+
+### 7.3 channel vs sync.Cond
+
+```
+sync.Cond: Wait / Signal / Broadcast
+  优: 零内存开销，灵活
+  缺: 容易写错（必须配合 Mutex + for 循环）
+
+channel: close / recv 天然广播
+  优: 代码清晰
+  缺: 单次使用（关闭后不能重开）
+
+实战:
+  一次性广播（启动信号 / 关闭信号）→ channel + close
+  反复通知（条件变量）→ sync.Cond
+```
+
+### 7.4 channel vs sync.WaitGroup
+
+```
+sync.WaitGroup: Add / Done / Wait
+  优: 直观，性能好
+  缺: 只能等所有 goroutine 完成
+
+channel: 每完成发一个
+  优: 可以逐个收集结果
+  缺: 需要知道数量
+
+实战:
+  等一组 goroutine 完成 → WaitGroup
+  收集结果 → channel + WaitGroup 组合
+```
+
+### 7.5 极致性能场景：避免 channel
+
+**高性能队列**（每秒千万级）用 channel 会瓶颈在：
+- hchan.lock 争抢
+- sudog 分配 / 唤醒
+
+**替代方案**：
+- Disruptor 风格 ringbuffer（sync/atomic + 填充防 False Sharing）
+- 无锁队列（CAS）
+- sharded channel（N 个 chan 分散争抢）
+
+Kitex、NATS 等高性能项目大量使用自研队列替代 channel。
+
+### 7.6 什么时候不要用 channel
+
+```
+❌ 高频读写共享计数器 → atomic
+❌ 保护结构体字段 → Mutex
+❌ 缓存热点数据 → sync.Map / 分段 Map
+❌ 单次信号量 → sync.Once
+❌ 百万级并发消息 → 自研无锁队列
+❌ 简单 fire-and-forget → 直接 go func()
+```
+
+## 八、关闭协议（Channel Closing Principle）
+
+Go 没有语法保证关闭安全，但有公认的**关闭协议**（Dave Cheney 总结）。
+
+### 8.1 核心原则
+
+**"Don't close a channel from the receiver side and don't close a channel if the channel has multiple concurrent senders."**
+
+- **永远由发送方关闭**
+- **多发送方场景需要额外协调**（不能随便某个 sender 关）
+
+### 8.2 场景 1：单发送方 + 单/多接收方（简单）
+
+```go
+// 发送方关闭即可
+func producer(out chan<- int) {
+    defer close(out)
+    for i := 0; i < 10; i++ {
+        out <- i
+    }
+}
+
+// 接收方
+for v := range out { ... }
+```
+
+### 8.3 场景 2：多发送方 + 单接收方
+
+**错误做法**（某 sender 关 → 其他 sender panic）：
+```go
+// ❌
+for i := 0; i < N; i++ {
+    go func() {
+        ch <- work()
+        close(ch)  // N 个 goroutine 抢着 close
+    }()
+}
+```
+
+**正确做法**：接收方用 `done chan` 通知所有发送方退出，再让**接收方关闭** done（不关 ch）：
+
+```go
+func coordinator() {
+    ch := make(chan int)
+    done := make(chan struct{})
+    var wg sync.WaitGroup
+
+    // N 个发送方
+    for i := 0; i < N; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for {
+                select {
+                case <-done:
+                    return
+                case ch <- work():
+                }
+            }
+        }()
+    }
+
+    // 接收方
+    for v := range ch {
+        if shouldStop(v) {
+            close(done)  // 接收方关 done，不关 ch
+            break
+        }
+    }
+    wg.Wait()
+    // 现在所有 sender 退出，可以安全 close ch（可选，不关也行）
+    close(ch)
+}
+```
+
+**关键**：`ch` 永远不被多方 close（要么不关，要么 wg.Wait 后单点关）。
+
+### 8.4 场景 3：多发送方 + 多接收方
+
+**最复杂**。经典方案：额外加一个 signal chan，用"**moderator 模式**"。
+
+```go
+type Result struct{ Val int }
+
+func runAll(N, M int) {
+    ch := make(chan Result)
+    stopCh := make(chan struct{})  // 关闭信号
+    var stopOnce sync.Once
+    stop := func() { stopOnce.Do(func() { close(stopCh) }) }
+
+    var wg sync.WaitGroup
+
+    // N 个发送方
+    for i := 0; i < N; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for {
+                r := Result{Val: rand.Int()}
+                select {
+                case <-stopCh:
+                    return
+                case ch <- r:
+                }
+            }
+        }()
+    }
+
+    // M 个接收方
+    var rwg sync.WaitGroup
+    for i := 0; i < M; i++ {
+        rwg.Add(1)
+        go func() {
+            defer rwg.Done()
+            for {
+                select {
+                case <-stopCh:
+                    return
+                case r := <-ch:
+                    if r.Val == 42 {
+                        stop()  // 任何接收方都可以触发停止
+                        return
+                    }
+                }
+            }
+        }()
+    }
+
+    rwg.Wait()
+    stop()
+    wg.Wait()
+}
+```
+
+**核心**：ch 永远不 close，通过 stopCh + sync.Once 保证关闭信号只触发一次，所有方看到 stopCh 关闭即退出。
+
+### 8.5 关闭协议总结表
+
+| 发送方数 | 接收方数 | 谁关闭 | 特殊处理 |
+| --- | --- | --- | --- |
+| 1 | 1 | 发送方 | 无 |
+| 1 | N | 发送方 | 无 |
+| N | 1 | **不关 ch**，接收方关 done | 发送方 select done |
+| N | M | **不关 ch**，用 stopCh + sync.Once | moderator 模式 |
+
+### 8.6 检测 chan 是否关闭（不优雅）
+
+```go
+// ❌ 没有"安全"的方式检测 chan 是否关闭（除非你能读它）
+// v, ok := <-ch 是唯一检测方式，但会消耗数据
+
+// ❌ 这种 trick 是反模式：
+func isClosed(ch <-chan int) bool {
+    select {
+    case _, ok := <-ch:
+        return !ok
+    default:
+        return false  // 有数据或无数据都返回 false
+    }
+}
+
+// ✅ 正确思路：用单独的 done chan 表达"关闭意图"
+type Closable struct {
+    done chan struct{}
+    once sync.Once
+}
+func (c *Closable) Close() { c.once.Do(func() { close(c.done) }) }
+func (c *Closable) Done() <-chan struct{} { return c.done }
+```
+
+这也是 `context.Context` 的设计思路。
+
+## 九、常见陷阱深挖
+
+### 陷阱 1：nil channel 永久阻塞
+
+```go
+var ch chan int  // nil
+ch <- 1          // 永久阻塞
+<-ch             // 永久阻塞
+```
+
+**妙用**：select 中动态屏蔽某路：
+```go
+var in, out chan int
+if condition {
+    in = actualCh  // 启用
+} else {
+    in = nil       // 屏蔽
+}
+select {
+case v := <-in:    // in=nil 时此 case 永不被选中
+    ...
+case <-out:
+    ...
+}
+```
+
+### 陷阱 2：range 不会退出（未 close）
+
+```go
+ch := make(chan int)
+go func() {
+    for i := 0; i < 3; i++ { ch <- i }
+    // 忘了 close(ch)
+}()
+
+for v := range ch {  // 收完 3 个后永久阻塞
+    fmt.Println(v)
+}
+```
+
+**修复**：range 的生产方必须 close。
+
+### 陷阱 3：循环变量捕获（Go 1.22 前）
+
+```go
+// Go 1.22 之前
+for _, ch := range chans {
+    go func() {
+        v := <-ch  // ch 可能是最后一个循环变量
+    }()
+}
+
+// 修复（Go 1.22 之前）
+for _, ch := range chans {
+    ch := ch  // 遮蔽
+    go func() { v := <-ch }()
+}
+```
+
+Go 1.22+ 自动每轮独立变量，此坑消失。
+
+### 陷阱 4：unbuffered chan 和 goroutine 启动时序
+
+```go
+ch := make(chan int)
+go func() {
+    <-ch
+    fmt.Println("received")
+}()
+ch <- 1  // OK，发送方等接收方
+// 但换个顺序:
+ch := make(chan int)
+ch <- 1  // ❌ 死锁（无人接收）
+go func() { <-ch }()  // 永远到不了
+```
+
+**教训**：unbuffered chan 的发送必须**确保接收方已启动**。
+
+### 陷阱 5：select 中的 case 表达式副作用
+
+```go
+select {
+case ch <- compute():  // compute() 在 select 启动时就求值（即使 case 没选中）
+case <-done:
+}
+```
+
+**教训**：select 启动时**所有 case 的表达式都求值**一次，耗时操作要预先算好。
+
+### 陷阱 6：goroutine 通过 chan 传递错误的指针
+
+```go
+// ❌
+for i := range items {
+    go func() {
+        result <- &items[i]  // 可能返回同一个地址？实际不会，但容易误解
+    }()
+}
+
+// ❌ 真正错的场景：传循环变量地址
+for i := 0; i < N; i++ {
+    x := i
+    go func() {
+        ch <- &x  // 每次新 x，OK
+    }()
+}
+// 但如果 x 在外面定义：
+var x int
+for i := 0; i < N; i++ {
+    x = i
+    go func() { ch <- &x }()  // 都指向同一个 x
+}
+```
+
+### 陷阱 7：关闭信号 chan 的两次 close
+
+```go
+// ❌
+close(done)
+close(done)  // panic
+
+// ✅ sync.Once
+var once sync.Once
+once.Do(func() { close(done) })
+```
+
+### 陷阱 8：buffered chan 不等于"异步"
+
+```go
+ch := make(chan int, 1)
+ch <- 1
+ch <- 2  // 阻塞！buf 满了
+
+// 误区：以为 buffer=1 可以无限发
+// 正确：buffer 只是削峰，满了依然阻塞
+```
+
+### 陷阱 9：chan 作为函数返回值被 GC
+
+```go
+func worker() <-chan int {
+    ch := make(chan int)
+    go func() {
+        defer close(ch)
+        for i := 0; i < 3; i++ {
+            ch <- i
+        }
+    }()
+    return ch  // 只要外部还持有 ch，goroutine 能正常退出
+}
+
+// 陷阱: 如果调用方没读完就丢弃返回值
+ch := worker()
+v := <-ch  // 只读了 1 个
+// 后续没人读 → 内部 goroutine 阻塞在 ch <- 1
+// 直到 ch 被 GC 回收（因为外部没引用）? 实际上不会被 GC，因为 goroutine 内部还持有 ch
+// → goroutine 泄漏
+```
+
+**修复**：用 ctx 通知结束。
+
+## 十、面试加分点（进阶）
+
+- 知道 **sudog** 是什么，channel 如何用它组织等待队列
+- 理解**直接 g-to-g 拷贝**优化（绕过 buf）
+- 能说清 **close 的批量唤醒**（glist + goready）
+- 知道 **select 的两套 order**（pollOrder 随机 + lockOrder 地址排序防死锁）
+- 知道 **关闭协议**（1:1 / 1:N / N:1 / N:M 各自的正确关闭方式）
+- 知道 **channel vs mutex 性能差 10-1000x**，不要滥用 channel
+- 能说出 **buffered 不等于异步**，满了照样阻塞
+- 知道 **nil chan 妙用**（select 动态屏蔽 case）
+- 知道**高性能场景下 channel 瓶颈**（hchan.lock + sudog 分配），替代方案（Disruptor / 自研）
+- 知道 **chan 关闭不是"检测"工具**，用 context 表达意图
