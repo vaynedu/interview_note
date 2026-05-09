@@ -171,23 +171,79 @@ flowchart LR
 
 **跳表（skiplist）原理**：
 
-```mermaid
-flowchart LR
-    subgraph L4[Level 4]
-        H4[head] --> N4_50[50]
-    end
-    subgraph L3[Level 3]
-        H3[head] --> N3_20[20] --> N3_50[50]
-    end
-    subgraph L2[Level 2]
-        H2[head] --> N2_10[10] --> N2_20[20] --> N2_50[50] --> N2_80[80]
-    end
-    subgraph L1[Level 1]
-        H1[head] --> N1_10[10] --> N1_15[15] --> N1_20[20] --> N1_30[30] --> N1_50[50] --> N1_70[70] --> N1_80[80]
-    end
+跳表的精髓：**同一个节点垂直贯穿多层**，高层是低层的稀疏索引。每个节点的层数随机生成（指数衰减，平均高度 1/(1-p) ≈ 2 层）。
+
+```text
+最高层（稀疏，跳跃远）
+    L4   head ──────────────────────────────► 50 ─────────────────────► NIL
+    L3   head ──────────► 20 ──────────────► 50 ─────────────────────► NIL
+    L2   head ──► 10 ──► 20 ──────────────► 50 ─────────► 80 ────────► NIL
+    L1   head ──► 10 ──► 15 ──► 20 ──► 30 ► 50 ──► 70 ──► 80 ────────► NIL
+最底层（包含所有节点 + 反向指针）
+
+         ▲              ▲       ▲       ▲       ▲       ▲
+         │              │       │       │       │       │
+       同一节点 10    节点 15  节点 20  节点 30 节点 50  节点 70/80
+       (高度 2)       (高度 1) (高度 3) (高度 1)(高度 4) (高度 1/2)
 ```
 
-每个节点随机层数（指数衰减，约 1/2 概率上一层），平均查找 O(log n)。
+**关键说明**：
+- 节点 `50` 高度 = 4，从 L1 到 L4 都有它的 forward 指针
+- 节点 `20` 高度 = 3，从 L1 到 L3 有它
+- 节点 `15`/`30`/`70` 高度 = 1，只在底层
+- 底层 L1 是完整有序链表，包含所有节点
+
+**Redis skiplist 节点结构（zskiplistNode）**：
+
+```c
+typedef struct zskiplistNode {
+    sds ele;                        // member
+    double score;                   // score（按它排序）
+    struct zskiplistNode *backward; // 反向指针（仅 L1 有，支持 ZREVRANGE）
+    struct zskiplistLevel {
+        struct zskiplistNode *forward; // 该层下一节点
+        unsigned long span;            // 到下一节点跨越的节点数（用于 ZRANK）
+    } level[];                      // 每层一个 forward + span
+} zskiplistNode;
+```
+
+**查找 score=30 的过程**（O(log n)）：
+
+```text
+              查找路径（从最高层向下、向右）
+
+    L4   head ───────────────────────────► 50    ① head.L4.forward = 50, 50 > 30, 下降
+                                            ▼
+    L3   head ─────────► 20 ─────────────► 50    ② head.L3.forward = 20, 20 ≤ 30 前进
+                          ▼                       ③ 20.L3.forward = 50, 50 > 30, 下降
+    L2   head ──► 10 ──► 20 ─────────────► 50    ④ 20.L2.forward = 50, 50 > 30, 下降
+                          ▼
+    L1   head ──► 10 ──► 20 ► 30 ► 50            ⑤ 20.L1.forward = 30 ✓ 命中
+
+    总共比较 4 次，跳过了 10/15
+```
+
+**插入随机层数算法**（每次随机到下一层概率 p = 0.25）：
+
+```c
+int zslRandomLevel(void) {
+    int level = 1;
+    while ((random()&0xFFFF) < (ZSKIPLIST_P * 0xFFFF))  // p = 0.25
+        level += 1;
+    return (level < ZSKIPLIST_MAXLEVEL) ? level : ZSKIPLIST_MAXLEVEL;
+}
+// 期望层高 = 1/(1-p) ≈ 1.33
+// 节点数 N=10000 时最高层约 log_4(N) ≈ 7
+// MAXLEVEL = 32（足够支撑 2^64 个节点）
+```
+
+**为什么 backward 指针只在 L1**：
+- 反向遍历（ZREVRANGE）只需要在底层走
+- 高层不需要反向，省内存
+
+**为什么有 span 字段**：
+- 用于 O(log n) 计算排名（ZRANK）
+- 累加经过节点的 span = 排名
 
 **为什么用跳表不用红黑树？**（高频题）
 1. **范围查询友好**：底层是有序链表，`ZRANGE` 直接顺序遍历
