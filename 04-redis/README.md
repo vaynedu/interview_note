@@ -4,7 +4,7 @@
 
 ## ★ 总览地图
 
-> **新人/复习者优先看** [00-redis-map.md](00-redis-map.md)：知识树 / 题型分类（基础/中级/资深）/ 学习路径 / 系统设计中的角色 / 线上排查地图 / 答题模板。
+> **新人/复习者优先看** [00-redis-map.md](00-redis-map.md)：知识树 / 题型分类（基础/中级/资深）/ 学习路径 / 系统设计中的角色 / 线上排查地图 / 答题模板
 
 ## 目录
 
@@ -22,6 +22,10 @@
 | 09 | [线上案例](09-production-cases.md) | 热 key / 大 key / 内存打满 / 慢查询 / 阻塞命令 / fork COW |
 | 10 | [缓存一致性](10-cache-consistency-design.md) | Cache Aside / 延迟双删 / binlog 订阅 / 强一致读 / 删除失败重试 |
 | 11 | [多级缓存](11-multi-tier-cache.md) | 多级缓存 + Go 本地缓存对比（Ristretto/BigCache/freecache）+ 热点检测 |
+| 15 | [集群故障与切换案例](15-cluster-failover-cases.md) | 写丢窗口 / 脑裂 / 哨兵误判 / reshard 风险 / MOVED/ASK / PSYNC/backlog / rewrite 抖动 |
+| 16 | [集群运维治理](16-redis-cluster-operability.md) | 拓扑/容量规划 / 关键配置 / 扩缩容与迁移流程 / 客户端治理 / 监控告警 / 演练复盘 |
+| 17 | [源码深水区：对象与编码](17-object-encoding-internals.md) | redisObject / SDS / 编码升级 / quicklist / skiplist / 渐进式 rehash |
+| 18 | [源码深水区：事件循环与内存](18-eventloop-memory-internals.md) | 事件循环 / IO threads / BIO / 过期循环 / LFU 近似 / 碎片与 jemalloc |
 | 20 | [Go Redis 最佳实践](20-go-redis-best-practices.md) | go-redis 连接池 / 超时分层 / Pipeline / Lua / Hook 埋点 / 熔断 fallback / 热 key SDK / 多级缓存组件 / 反模式 |
 
 ## 高频面试题（跨章索引）
@@ -41,6 +45,8 @@
 - 缓存一致性为什么常用先写 DB 再删缓存？（→ 10）
 - 删除缓存失败怎么办？延迟双删和 binlog 订阅怎么选？（→ 10）
 - 多级缓存怎么设计？本地缓存 Ristretto/BigCache 怎么选？（→ 11）
+- 主从切换时哪些写会丢？脑裂写丢失怎么理解？（→ 15）
+- MOVED/ASK 是什么？reshard 会影响业务哪些指标？（→ 15）
 - go-redis 连接池 PoolSize 怎么调？ConnMaxLifetime 为什么要设？（→ 20）
 - Pipeline 在 Go 里怎么封装？Cluster 跨 slot 怎么办？（→ 20）
 - Redis 挂了业务怎么办？熔断 + fallback 怎么包一层 SDK？（→ 20）
@@ -53,9 +59,10 @@
 3. 学 05-06 学**核心场景**（缓存 / 锁）
 4. 学 07-08 学**调优 + 实战场景**
 5. 学 09-11 学**资深题**（生产事故 / 一致性 / 多级缓存）
-6. 学 20 落地**Go SDK 工程化**（连接池 / 超时 / 埋点 / 熔断 / 热 key）
-7. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
-8. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
+6. 学 15-18 学**资深追问：高可用 + 源码**（故障/运维治理 + 事件循环/内存/编码）
+7. 学 20 落地**Go SDK 工程化**（连接池 / 超时 / 埋点 / 熔断 / 热 key）
+8. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
+9. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
 
 ## 设计原则
 
