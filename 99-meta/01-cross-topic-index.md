@@ -537,15 +537,12 @@ T+7 缩容
 
 ### 8.2 散点 vs 综合的学习
 
-```
-散点学习（专题深度）:
-  → 各专题文章
+**散点学习**（专题深度）：各专题文章。
 
-综合应用（场景能力）:
-  → system-design/* + 14-projects/*
-  → 99-meta/*-20.md 速记题集
-  → 见 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)（C 篇）
-```
+**综合应用**（场景能力）：
+- system-design/* + 14-projects/*
+- 99-meta/*-20.md 速记题集
+- 见 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)（C 篇）
 
 ---
 
@@ -606,12 +603,10 @@ T+7 缩容
 
 ### 10.1 准 P7（8 年）综合补强
 
-```
 1. 各专题题集速记（99-meta/*-20.md）→ 1 周
 2. 综合场景串联（system-design + projects）→ 1 周
 3. 高并发实战（[../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)）→ 3 天
 4. 答辩 / 大厂 JD 拆解 → 1 周
-```
 
 ### 10.2 准 TL（管理路线）
 
