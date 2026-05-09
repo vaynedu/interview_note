@@ -19,6 +19,8 @@
 | 07 | [场景实战](07-scenarios.md) | 削峰 / 解耦 / 事务消息 / 延时 / 死信 / 重试 / 踩坑 |
 | 08 | [线上案例](08-production-cases.md) | 消息积压 / 重复消费 / 消息丢失 / 顺序错乱 / 死信 / Rebalance |
 | 09 | [事务消息与 Outbox](09-transaction-message-outbox.md) | 本地事务 + MQ / Outbox / RocketMQ 事务消息 / 对账补偿 |
+| **10** | **[Go MQ 工程实战 ★](10-go-mq-practice.md)** | **kafka-go / RocketMQ Go / Producer 封装 / Consumer 封装 / 幂等 / Rebalance / DLQ / OTel / 反模式** |
+| **11** | **[资深答题模板 ★](11-mq-senior-answers.md)** | **6 大快 / 三端不丢 / 顺序 / 不重 / Rebalance / Lag / 选型 / 20 问速答** |
 
 ## 跨章高频题
 
