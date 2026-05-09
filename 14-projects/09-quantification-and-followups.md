@@ -841,15 +841,13 @@ A: 2-3 个有质量的问题
 
 ## 十二、关联阅读
 
-```
-本目录:
-- 06-interview-star-template.md    STAR-L 框架
-- 07-ecommerce-story.md            电商项目
-- 08-im-story.md                   IM 项目
-- 05-ddd-order-example.md          DDD 订单
+**本目录**：
+- [06-interview-star-template.md](06-interview-star-template.md) — STAR-L 框架
+- [07-ecommerce-story.md](07-ecommerce-story.md) — 电商项目
+- [08-im-story.md](08-im-story.md) — IM 项目
+- [05-ddd-order-example.md](05-ddd-order-example.md) — DDD 订单
 
-跨模块:
+**跨模块**：
 - 15-leadership/                   Leadership 相关
 - 10-system-design/                系统设计参考
 - 99-meta/                         题集速记
-```

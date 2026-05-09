@@ -1112,19 +1112,17 @@ T+0 45min: 完全恢复
 
 ## 十、关联阅读
 
-```
-本目录:
-- 06-interview-star-template.md    STAR-L 框架
-- 08-im-story.md                   IM 项目
-- 09-quantification-and-followups.md 量化 + 追问
+**本目录**：
+- [06-interview-star-template.md](06-interview-star-template.md) — STAR-L 框架
+- [08-im-story.md](08-im-story.md) — IM 项目
+- [09-quantification-and-followups.md](09-quantification-and-followups.md) — 量化 + 追问
 
-跨模块:
-- 03-mysql/11-order-system-design.md  订单系统设计
-- 03-mysql/12-sharding.md             分库分表
-- 04-redis/08-scenarios.md            Redis 场景（秒杀/库存）
-- 05-message-queue/00-mq-map.md       MQ 选型
-- 06-distributed/03-transaction.md    分布式事务
-- 09-ddd/06-go-implementation.md      DDD 实战
-- 10-system-design/03-seckill-system.md 秒杀
-- 10-system-design/16-high-concurrency-scenarios.md 综合实战
-```
+**跨模块**：
+- [03-mysql/11-order-system-design.md](../03-mysql/11-order-system-design.md) — 订单系统设计
+- [03-mysql/12-sharding.md](../03-mysql/12-sharding.md) — 分库分表
+- [04-redis/08-scenarios.md](../04-redis/08-scenarios.md) — Redis 场景（秒杀/库存）
+- [05-message-queue/00-mq-map.md](../05-message-queue/00-mq-map.md) — MQ 选型
+- [06-distributed/03-transaction.md](../06-distributed/03-transaction.md) — 分布式事务
+- [09-ddd/06-go-implementation.md](../09-ddd/06-go-implementation.md) — DDD 实战
+- [10-system-design/03-seckill-system.md](../10-system-design/03-seckill-system.md) — 秒杀
+- [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md) — 综合实战

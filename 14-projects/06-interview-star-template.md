@@ -692,20 +692,18 @@ C 类：CRUD / 跟着别人做 / 维护性
 
 ## 十一、关联阅读
 
-```
-本目录:
-- 00-project-map.md            项目地图
-- 01-project-story-framework.md 故事框架
-- 02-performance-optimization-cases.md 性能优化案例
-- 03-production-incident-stories.md 生产事故故事
-- 04-project-template.md       项目模板
-- 05-ddd-order-example.md      DDD 订单完整案例
-- 07-ecommerce-story.md        电商完整项目（待）
-- 08-im-story.md               IM 完整项目（待）
-- 09-quantification-and-followups.md 量化 + 追问应对（待）
+**本目录**：
+- [00-project-map.md](00-project-map.md) — 项目地图
+- [01-project-story-framework.md](01-project-story-framework.md) — 故事框架
+- [02-performance-optimization-cases.md](02-performance-optimization-cases.md) — 性能优化案例
+- [03-production-incident-stories.md](03-production-incident-stories.md) — 生产事故故事
+- [04-project-template.md](04-project-template.md) — 项目模板
+- [05-ddd-order-example.md](05-ddd-order-example.md) — DDD 订单完整案例
+- [07-ecommerce-story.md](07-ecommerce-story.md) — 电商完整项目（待）
+- [08-im-story.md](08-im-story.md) — IM 完整项目（待）
+- [09-quantification-and-followups.md](09-quantification-and-followups.md) — 量化 + 追问应对（待）
 
-跨模块:
-- 15-leadership/04-senior-answers.md  Leadership 答题（待）
-- 99-meta/01-cross-topic-index.md     跨主题索引
-- 10-system-design/16-high-concurrency-scenarios.md 高并发场景
-```
+**跨模块**：
+- [15-leadership/04-senior-answers.md](../15-leadership/04-senior-answers.md) — Leadership 答题（待）
+- [99-meta/01-cross-topic-index.md](../99-meta/01-cross-topic-index.md) — 跨主题索引
+- [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md) — 高并发场景

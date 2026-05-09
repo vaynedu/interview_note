@@ -1690,17 +1690,15 @@ P8 候选人:
 
 ## 十、关联阅读
 
-```
-本目录:
-- 00-leadership-map.md             知识地图
-- 01-tech-lead-skills.md           TL 技能
-- 02-business-product-thinking.md  业务产品
-- 03-tech-strategy-planning.md     技术战略
-- 05-team-management-cases.md      团队管理案例（待）
+**本目录**：
+- [00-leadership-map.md](00-leadership-map.md) — 知识地图
+- [01-tech-lead-skills.md](01-tech-lead-skills.md) — TL 技能
+- [02-business-product-thinking.md](02-business-product-thinking.md) — 业务产品
+- [03-tech-strategy-planning.md](03-tech-strategy-planning.md) — 技术战略
+- [05-team-management-cases.md](05-team-management-cases.md) — 团队管理案例（待）
 
-跨模块:
-- 14-projects/06-interview-star-template.md  STAR-L 框架
-- 14-projects/09-quantification-and-followups.md 量化 + 追问
-- 03-mysql/20-mysql-senior-answers.md  MySQL 答题（对偶）
-- 04-redis/21-senior-interview-answers.md  Redis 答题（对偶）
-```
+**跨模块**：
+- [14-projects/06-interview-star-template.md](../14-projects/06-interview-star-template.md) — STAR-L 框架
+- [14-projects/09-quantification-and-followups.md](../14-projects/09-quantification-and-followups.md) — 量化 + 追问
+- [03-mysql/20-mysql-senior-answers.md](../03-mysql/20-mysql-senior-answers.md) — MySQL 答题（对偶）
+- [04-redis/21-senior-interview-answers.md](../04-redis/21-senior-interview-answers.md) — Redis 答题（对偶）

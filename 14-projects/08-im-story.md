@@ -1046,16 +1046,14 @@ read_state:
 
 ## 十、关联阅读
 
-```
-本目录:
-- 06-interview-star-template.md    STAR-L 框架
-- 07-ecommerce-story.md            电商项目
-- 09-quantification-and-followups.md 量化 + 追问
+**本目录**：
+- [06-interview-star-template.md](06-interview-star-template.md) — STAR-L 框架
+- [07-ecommerce-story.md](07-ecommerce-story.md) — 电商项目
+- [09-quantification-and-followups.md](09-quantification-and-followups.md) — 量化 + 追问
 
-跨模块:
-- 04-redis/08-scenarios.md         Redis 场景（在线状态 / 计数）
-- 05-message-queue/00-mq-map.md    MQ 选型
-- 06-distributed/04-lock.md        分布式锁
-- 10-system-design/08-im-system.md IM 系统设计
-- 11-cdn/06-edge-computing.md      边缘计算
-```
+**跨模块**：
+- [04-redis/08-scenarios.md](../04-redis/08-scenarios.md) — Redis 场景（在线状态 / 计数）
+- [05-message-queue/00-mq-map.md](../05-message-queue/00-mq-map.md) — MQ 选型
+- [06-distributed/04-lock.md](../06-distributed/04-lock.md) — 分布式锁
+- [10-system-design/08-im-system.md](../10-system-design/08-im-system.md) — IM 系统设计
+- [11-cdn/06-edge-computing.md](../11-cdn/06-edge-computing.md) — 边缘计算

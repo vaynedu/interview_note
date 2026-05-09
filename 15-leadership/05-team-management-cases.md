@@ -1271,17 +1271,15 @@ Step 6: 数据反馈
 
 ## 十四、关联阅读
 
-```
-本目录:
-- 00-leadership-map.md             知识地图
-- 01-tech-lead-skills.md           TL 技能
-- 02-business-product-thinking.md  业务产品
-- 03-tech-strategy-planning.md     技术战略
-- 04-senior-answers.md             答题模板
+**本目录**：
+- [00-leadership-map.md](00-leadership-map.md) — 知识地图
+- [01-tech-lead-skills.md](01-tech-lead-skills.md) — TL 技能
+- [02-business-product-thinking.md](02-business-product-thinking.md) — 业务产品
+- [03-tech-strategy-planning.md](03-tech-strategy-planning.md) — 技术战略
+- [04-senior-answers.md](04-senior-answers.md) — 答题模板
 
-跨模块:
-- 14-projects/06-interview-star-template.md  STAR-L 框架
-- 14-projects/07-ecommerce-story.md          电商项目
-- 14-projects/08-im-story.md                 IM 项目
-- 14-projects/09-quantification-and-followups.md 量化追问
-```
+**跨模块**：
+- [14-projects/06-interview-star-template.md](../14-projects/06-interview-star-template.md) — STAR-L 框架
+- [14-projects/07-ecommerce-story.md](../14-projects/07-ecommerce-story.md) — 电商项目
+- [14-projects/08-im-story.md](../14-projects/08-im-story.md) — IM 项目
+- [14-projects/09-quantification-and-followups.md](../14-projects/09-quantification-and-followups.md) — 量化追问
