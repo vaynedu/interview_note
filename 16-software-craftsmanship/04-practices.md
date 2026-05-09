@@ -310,11 +310,11 @@ func (o *Order) Cancel() error {
 }
 ```
 
-**Go 推荐充血**（详见 09-ddd / 14-projects）。
+**Go 推荐充血**（详见 [09-ddd/](../09-ddd/) / 14-projects）。
 
 ## 3.5 OOD 原则
 
-- **SOLID**（详见 02-design-principles）
+- **SOLID**（详见 [02-design-principles.md](02-design-principles.md)）
 - **Tell, Don't Ask**：让对象自己做事，不要询问状态后做事
 - **DRY / KISS / YAGNI**
 

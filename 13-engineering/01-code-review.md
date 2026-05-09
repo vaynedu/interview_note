@@ -370,7 +370,7 @@ for _, v := range items {
 □ 不要在库里 panic，返回 error
 ```
 
-详见 01-go-language/05-engineering。
+详见 [01-go-language/05-engineering/](../01-go-language/05-engineering/)。
 
 ### 4.3 Go 性能 CR
 

@@ -576,7 +576,7 @@ error_budget:
 | P2 一般 | 工作时间 | 慢查询、磁盘 80% |
 | P3 通知 | 日报 | 配置变更 |
 
-详见 08-architecture/02-high-availability。
+详见 [08-architecture/02-high-availability.md](../08-architecture/02-high-availability.md)。
 
 ### 9.3 告警最佳实践
 

@@ -184,7 +184,7 @@ type Client struct{}
 func (c *Client) GetUser(id string) (*User, error) { ... }
 ```
 
-详见 01-go-language/05-engineering。
+详见 [01-go-language/05-engineering/](../01-go-language/05-engineering/)。
 
 ### 2.3 自动化工具
 
@@ -329,7 +329,7 @@ ID: string（雪花/UUID）/ int64
 枚举: enum
 ```
 
-详见 07-microservice/05-rpc-frameworks。
+详见 [07-microservice/05-rpc-frameworks.md](../07-microservice/05-rpc-frameworks.md)。
 
 ### 3.3 接口契约
 
@@ -417,7 +417,7 @@ if errors.As(err, &bizErr) && bizErr.Code == 30001 {
 }
 ```
 
-详见 01-go-language/01-syntax/error.md + 03-mysql/AGENTS.md。
+详见 [01-go-language/01-syntax/error.md](../01-go-language/01-syntax/error.md) + 03-mysql/AGENTS.md。
 
 ## 五、命名规范
 
@@ -482,7 +482,7 @@ user, order, password, button
 → 代码命名严格对齐
 ```
 
-详见 09-ddd/01-strategic-design。
+详见 [09-ddd/01-strategic-design.md](../09-ddd/01-strategic-design.md)。
 
 ### 5.4 数据库命名
 
@@ -531,7 +531,7 @@ project/
 └── .gitignore
 ```
 
-详见 09-ddd/06-go-implementation。
+详见 [09-ddd/06-go-implementation.md](../09-ddd/06-go-implementation.md)。
 
 ### 6.2 包依赖方向
 
@@ -717,7 +717,7 @@ make run
 
 ### 8.3 ADR（架构决策记录）
 
-详见 08-architecture/06-decision-tradeoff。
+详见 [08-architecture/06-decision-tradeoff.md](../08-architecture/06-decision-tradeoff.md)。
 
 每个重要决策一个 ADR：
 - 背景

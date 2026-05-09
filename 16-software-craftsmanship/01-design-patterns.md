@@ -1565,7 +1565,7 @@ POSA = "Pattern-Oriented Software Architecture"，5 卷书，主要模式：
 - 领域层（业务规则）
 - 基础设施层（DB / 外部）
 
-**Go 案例**：DDD 项目（详见 09-ddd），ddd_order_example。
+**Go 案例**：DDD 项目（详见 [09-ddd/](../09-ddd/)），ddd_order_example。
 
 ## 4.2 Pipe-Filter 管道-过滤器
 
@@ -1607,7 +1607,7 @@ cat log | grep ERROR | wc -l
 - Netty — Multi-Reactor
 - Go runtime 的 netpoll（封装 epoll）
 
-详见 02-os/05-io-multiplexing.md。
+详见 [02-os/05-io-multiplexing.md](../02-os/05-io-multiplexing.md)。
 
 ---
 

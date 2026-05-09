@@ -603,7 +603,7 @@ Claude / GPT 对长 prompt 不敏感
    独立 LLM 检测注入意图
 ```
 
-详见 12-ai/05-ai-interview-questions.md。
+详见 [12-ai/05-ai-interview-questions.md](05-ai-interview-questions.md)。
 
 ---
 

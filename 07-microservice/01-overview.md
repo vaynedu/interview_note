@@ -81,7 +81,7 @@ flowchart TB
 
 **本质**：微服务 = "**SOA 去 ESB + 细粒度 + 一服务一库 + DevOps**"。
 
-详见 08-architecture/01-evolution。
+详见 [08-architecture/01-evolution.md](../08-architecture/01-evolution.md)。
 
 ## 二、12-Factor App（云原生应用准则）
 
@@ -160,7 +160,7 @@ flowchart TB
     style Biz fill:#9f9
 ```
 
-详见 09-ddd/01-strategic-design。
+详见 [09-ddd/01-strategic-design.md](../09-ddd/01-strategic-design.md)。
 
 ### 3.2 拆分粒度
 
@@ -217,7 +217,7 @@ flowchart LR
 - **数据先行**：DB 拆分比应用拆分更难，提前规划
 - **绝不大爆炸**：宁可 2 年慢拆，不要 2 周强拆
 
-详见 09-ddd/01 + 08-architecture/01。
+详见 [09-ddd/01-strategic-design.md](../09-ddd/01-strategic-design.md) + 08-architecture/01。
 
 ## 四、微服务的真实代价
 
@@ -382,7 +382,7 @@ flowchart LR
 - **防腐层 (ACL)** → 服务调用的适配器
 - **应用服务** → 服务的对外接口
 
-详见 09-ddd 全套。
+详见 [09-ddd/](../09-ddd/) 全套。
 
 ## 八、ddd_order_example 微服务化思路
 
@@ -433,7 +433,7 @@ T7: 全链路可观测性闭环
 - 数据库：共享 schema → 各自独立 DB
 - 商品服务：内部接口 → 防腐层 + 真实 RPC
 
-详见 09-ddd/06-go-implementation。
+详见 [09-ddd/06-go-implementation.md](../09-ddd/06-go-implementation.md)。
 
 ## 九、典型反模式
 

@@ -886,7 +886,7 @@ mindmap
 
 ### Q3: 设计订单系统（按 ddd_order_example 答）
 
-详见 14-projects/05-ddd-order-example。
+详见 [14-projects/05-ddd-order-example.md](../14-projects/05-ddd-order-example.md)。
 
 ### Q4: 双 11 大促怎么准备？
 

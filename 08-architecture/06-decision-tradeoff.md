@@ -315,7 +315,7 @@ flowchart TB
 看似微服务，实质强耦合：必须按顺序部署、改一个连改多个
 ```
 
-**修复**：DDD 战略 + 集成事件。详见 09-ddd/07。
+**修复**：DDD 战略 + 集成事件。详见 [09-ddd/07-anti-patterns-best-practices.md](../09-ddd/07-anti-patterns-best-practices.md)。
 
 ### 反模式 3：金锤子（Golden Hammer）
 

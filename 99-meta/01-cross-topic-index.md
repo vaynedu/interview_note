@@ -434,7 +434,7 @@ MQ: 异步落库
 数据: 分库分表 + 主从
 ```
 
-详见 13-high-concurrency-scenarios（C 篇）。
+详见 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)（C 篇）。
 
 ### 5.3 大促准备路径
 
@@ -457,7 +457,7 @@ T+7 缩容
 | 高性能 | [08-architecture/03-high-performance](../08-architecture/03-high-performance.md) |
 | 容量规划 | [08-architecture/05-capacity-planning](../08-architecture/05-capacity-planning.md) |
 | 限流熔断 | [06-distributed/06-rate-limit-circuit](../06-distributed/06-rate-limit-circuit.md) |
-| 综合场景 | 见 13-high-concurrency-scenarios |
+| 综合场景 | 见 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md) |
 
 ---
 
@@ -544,7 +544,7 @@ T+7 缩容
 综合应用（场景能力）:
   → system-design/* + 14-projects/*
   → 99-meta/*-20.md 速记题集
-  → 见 13-high-concurrency-scenarios（C 篇）
+  → 见 [../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)（C 篇）
 ```
 
 ---
@@ -609,7 +609,7 @@ T+7 缩容
 ```
 1. 各专题题集速记（99-meta/*-20.md）→ 1 周
 2. 综合场景串联（system-design + projects）→ 1 周
-3. 高并发实战（13-high-concurrency-scenarios）→ 3 天
+3. 高并发实战（[../10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)）→ 3 天
 4. 答辩 / 大厂 JD 拆解 → 1 周
 ```
 

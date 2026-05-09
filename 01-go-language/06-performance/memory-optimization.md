@@ -249,7 +249,7 @@ flowchart LR
 
 **Q4：怎么减少 interface{} 装箱？**
 1. **热路径用具体类型**：`func Add(a, b int)` 而不是 `func Add(a, b any)`
-2. **Go 1.18+ 用泛型**：`func Sum[T Number](xs []T)`
+2. **Go 1.18+ 用泛型**：`func Sum@@P33P@@`
 3. **避免 `[]any`**：用具体类型 slice
 4. **fmt.Sprintf 优化**：`strconv.Itoa` 比 `fmt.Sprintf("%d")` 快 5x 且不装箱
 

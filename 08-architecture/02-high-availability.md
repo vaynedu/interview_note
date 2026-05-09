@@ -424,7 +424,7 @@ stateDiagram-v2
 - **gobreaker**（Go）
 - **Service Mesh Sidecar** 内置
 
-详见 06-distributed/06。
+详见 [06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md)。
 
 ## 七、故障转移（Failover）
 

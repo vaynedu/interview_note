@@ -663,7 +663,7 @@ Open (再等冷却)
 
 **Q6：怎么实现滑动窗口限流？**
 
-ZSet + Lua（详见 04-redis/08）。
+ZSet + Lua（详见 [04-redis/08-scenarios.md](../04-redis/08-scenarios.md)）。
 或固定窗口的滑动版本：拆 N 个小格，按比例计算。
 
 **Q7：自适应熔断怎么工作？**

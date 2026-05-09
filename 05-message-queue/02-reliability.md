@@ -108,7 +108,7 @@ enable.idempotence=true
 
 依赖：`acks=all`、`max.in.flight.requests.per.connection ≤ 5`、`retries > 0`。
 
-详见 03。
+详见 [03-order-and-dedup.md](03-order-and-dedup.md)。
 
 ### 2.6 同步 vs 异步发送
 
@@ -327,7 +327,7 @@ for _, msg := range msgs {
 }
 ```
 
-详见 07-scenarios。
+详见 [07-scenarios.md](07-scenarios.md)。
 
 ### 4.6 消费者最佳实践
 

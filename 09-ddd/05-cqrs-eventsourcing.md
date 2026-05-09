@@ -430,7 +430,7 @@ type SagaStep struct {
 | 隔离性 | 中间状态可见 | 较好 |
 | 适合 | 长事务、跨服务 | 强隔离要求 |
 
-详见 06-distributed/03-distributed-transaction.md。
+详见 [06-distributed/03-distributed-transaction.md](06-distributed/03-distributed-transaction.md)。
 
 ## 六、CQRS + ES + DDD 协同
 

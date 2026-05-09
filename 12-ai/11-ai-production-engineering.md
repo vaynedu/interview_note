@@ -779,7 +779,7 @@ Claude Code 内置多 Agent 协作：
 - 主 Agent 派 Subagent
 - Subagent 独立 context
 - 完成后只返回结论
-- 详见 12-ai/07-claude-code-mastery.md
+- 详见 [12-ai/07-claude-code-mastery.md](07-claude-code-mastery.md)
 
 ### 7.6 多 Agent 反模式
 

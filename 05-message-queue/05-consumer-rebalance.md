@@ -199,7 +199,7 @@ process(msg)
 consumer.CommitSync()  // 崩了重复消费 → 业务幂等
 ```
 
-详见 02 / 03。
+详见 [02-reliability.md](02-reliability.md) / 03。
 
 ### 2.5 offset 重置
 

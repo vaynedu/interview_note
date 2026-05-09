@@ -273,7 +273,7 @@ flowchart TD
 - 只把"必须强一致"的数据放一起
 - 其他通过 ID 引用 / 领域事件
 
-详见 03。
+详见 [03-aggregate-design.md](03-aggregate-design.md)。
 
 ## 四、仓储（Repository）
 
@@ -1104,7 +1104,7 @@ type Order struct {
 1. **领域事件**（异步）：改 A 聚合 → 发事件 → 订阅者改 B 聚合
 2. **Saga**（分布式事务）：协调多个聚合，支持补偿
 
-详见 03 / 05 / `06-distributed/03-transaction.md`。
+详见 [03-aggregate-design.md](03-aggregate-design.md) / 05 / `06-distributed/03-transaction.md`。
 
 ## 十三、面试加分点
 

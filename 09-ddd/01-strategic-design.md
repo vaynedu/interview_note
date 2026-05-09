@@ -49,7 +49,7 @@ flowchart LR
 ```
 
 - **战略设计**：宏观，划分系统、定边界、定关系（本篇）
-- **战术设计**：微观，每个上下文里怎么写代码（详见 02）
+- **战术设计**：微观，每个上下文里怎么写代码（详见 [02-tactical-building-blocks.md](02-tactical-building-blocks.md)）
 
 ## 二、通用语言（Ubiquitous Language）
 
@@ -602,7 +602,7 @@ DDD 不强制微服务，但微服务**很需要 DDD**。
 
 DDD 不要求用 CQRS / ES，但 CQRS / ES 几乎都基于 DDD。
 
-详见 05。
+详见 [05-cqrs-eventsourcing.md](05-cqrs-eventsourcing.md)。
 
 **Q10：事件风暴（Event Storming）是什么？**
 

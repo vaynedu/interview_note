@@ -487,7 +487,7 @@ client.CreateOrder(ctx, req)  // 重试可能创建多个订单！
 
 ### 7.3 熔断
 
-详见 06-distributed/06。
+详见 [06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md)。
 
 ```go
 // Kitex 熔断
@@ -497,7 +497,7 @@ client.CreateOrder(ctx, req, opt)
 
 ### 7.4 限流
 
-详见 06-distributed/06。
+详见 [06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md)。
 
 ```go
 // Kitex 限流

@@ -94,7 +94,7 @@ flowchart TB
 | **Write-Behind** | 写缓存异步刷 DB | 高吞吐 |
 | **Refresh-Ahead** | 过期前主动刷新 | 防击穿 |
 
-详见 04-redis/05-cache-patterns。
+详见 [04-redis/05-cache-patterns.md](../04-redis/05-cache-patterns.md)。
 
 ### 2.4 缓存三大问题
 
@@ -112,7 +112,7 @@ mindmap
       解决: 过期时间随机化 / 多级缓存
 ```
 
-详见 04-redis/05。
+详见 [04-redis/05-cache-patterns.md](../04-redis/05-cache-patterns.md)。
 
 ### 2.5 多级缓存的取舍
 
@@ -240,7 +240,7 @@ mindmap
   - 用户感知（订单创建了但邮件没发出去？）
 ```
 
-详见 05-message-queue。
+详见 [05-message-queue/](../05-message-queue/)。
 
 ### 3.5 何时不该异步
 
@@ -516,7 +516,7 @@ var counter int64
 atomic.AddInt64(&counter, 1)
 ```
 
-详见 01-go-language/02-concurrency/memory-model。
+详见 [01-go-language/02-concurrency/memory-model.md](../01-go-language/02-concurrency/memory-model.md)。
 
 ### 6.6 无共享（Share Nothing）
 
@@ -626,7 +626,7 @@ flowchart LR
 
 **适合**：读写比 > 5:1。
 
-**坑**：主从延迟 → 写后立即读拿不到（详见 03-mysql/05）。
+**坑**：主从延迟 → 写后立即读拿不到（详见 [03-mysql/05-replication-ha.md](../03-mysql/05-replication-ha.md)）。
 
 ### 8.2 应用级读写分离
 
@@ -643,7 +643,7 @@ func (d *DB) Exec(...)  { d.master.Exec(...) }
 
 ### 8.3 CQRS（命令查询职责分离）
 
-详见 09-ddd/05。
+详见 [09-ddd/05-cqrs-eventsourcing.md](../09-ddd/05-cqrs-eventsourcing.md)。
 
 读写分离的极致：**写库 + 读专用模型/视图/ES**。
 
@@ -708,7 +708,7 @@ ExecutorService pool = ...;
 pool.submit(() -> handle(req));
 ```
 
-GMP 调度让百万 goroutine 成为常态（详见 01-go-language/03-runtime）。
+GMP 调度让百万 goroutine 成为常态（详见 [01-go-language/03-runtime/](../01-go-language/03-runtime/)）。
 
 ## 十一、全链路视角
 
@@ -730,7 +730,7 @@ flowchart TB
     Lock --> Mutex[go pprof mutex/block]
 ```
 
-详见 01-go-language/06-performance。
+详见 [01-go-language/06-performance/](../01-go-language/06-performance/)。
 
 ### 11.2 性能优化优先级
 

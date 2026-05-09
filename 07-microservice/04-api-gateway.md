@@ -273,7 +273,7 @@ flowchart TB
 
 **适合**：Service Mesh / 大规模微服务。
 
-详见 06-service-mesh。
+详见 [06-service-mesh.md](06-service-mesh.md)。
 
 ### 4.7 Higress
 
@@ -377,7 +377,7 @@ mindmap
       降级
 ```
 
-详见 06-distributed/06。
+详见 [06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md)。
 
 **网关限流示例**（APISIX）：
 ```yaml
@@ -430,7 +430,7 @@ plugins:
     retry_on: [5xx, gateway-error]
 ```
 
-详见 06-distributed/06。
+详见 [06-distributed/06-rate-limit-circuit.md](../06-distributed/06-rate-limit-circuit.md)。
 
 ### 5.7 跨域 (CORS)
 

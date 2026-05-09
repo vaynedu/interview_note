@@ -707,7 +707,7 @@ AI 给正则 + 解释 + 测试用例。
    - 完整代码 + 配置"
 ```
 
-详见 13-engineering/04-observability-integration.md。
+详见 [13-engineering/04-observability-integration.md](../13-engineering/04-observability-integration.md)。
 
 ### 11.4 数据迁移
 

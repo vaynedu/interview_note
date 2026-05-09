@@ -261,7 +261,7 @@ func TestCreateOrder(t *testing.T) {
 }
 ```
 
-详见 09-ddd/06-go-implementation。
+详见 [09-ddd/06-go-implementation.md](../09-ddd/06-go-implementation.md)。
 
 ### 4.4 Mock 最佳实践
 
@@ -605,7 +605,7 @@ BenchmarkAdd-8    1000000000    0.5 ns/op    0 B/op    0 allocs/op
 | k6 | 现代 |
 | go-stress-testing | 简单 Go |
 
-详见 08-architecture/05-capacity-planning。
+详见 [08-architecture/05-capacity-planning.md](../08-architecture/05-capacity-planning.md)。
 
 ## 十、Fuzz 测试
 

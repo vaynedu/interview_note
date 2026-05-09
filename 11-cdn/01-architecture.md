@@ -346,7 +346,7 @@ flowchart TB
 
 URL 带 query string 全部缓存 → 命中率极低（每个用户不同）。
 
-**修复**：缓存键去掉无关参数（详见 02-cache-strategy）。
+**修复**：缓存键去掉无关参数（详见 [02-cache-strategy.md](02-cache-strategy.md)）。
 
 ### 坑 3：源站设计没考虑回源
 
@@ -379,7 +379,7 @@ DNS 把所有用户调到同一节点 → 节点崩。
 
 促销开抢，热点资源没预热 → 短时间高回源 → 雪崩。
 
-**修复**：活动前预热（详见 08-troubleshooting）。
+**修复**：活动前预热（详见 [08-troubleshooting-cases.md](08-troubleshooting-cases.md)）。
 
 ## 八、面试高频题
 
@@ -426,7 +426,7 @@ CDN 本质是**全球化 + 智能调度的反向代理网络**。
 智能 DNS（GSLB）：
 - 看用户 LDNS IP 推断地理位置 + 运营商
 - 选最近、负载最低的节点 IP 返回
-- 详见 03-routing-dispatch
+- 详见 [03-routing-dispatch.md](03-routing-dispatch.md)
 
 **Q7：动态加速的原理？**
 
@@ -467,5 +467,5 @@ CDN 本质是**全球化 + 智能调度的反向代理网络**。
 - 自研核心：**调度 + 缓存软件 + 回源 + 边缘计算**
 - 关键指标 7 个，TTFB / 命中率 / 回源率最重要
 - 跨网用 BGP / 多线 / Anycast 解决
-- 新协议红利：**HTTP/2 → HTTP/3 QUIC**（详见 04）
-- 永远要测**回源风暴** + **预热**（详见 08）
+- 新协议红利：**HTTP/2 → HTTP/3 QUIC**（详见 [04-protocol-optimization.md](04-protocol-optimization.md)）
+- 永远要测**回源风暴** + **预热**（详见 [08-troubleshooting-cases.md](08-troubleshooting-cases.md)）

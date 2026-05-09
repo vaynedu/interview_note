@@ -177,7 +177,7 @@ Kafka 给 Producer 分配 PID + 每条消息 sequence number，broker 去重。
 
 **修复**：业务幂等。
 
-### 2.4 业务幂等（详见 distributed/08）
+### 2.4 业务幂等（详见 [../06-distributed/08-design-patterns.md](../06-distributed/08-design-patterns.md)）
 
 5 种方式：
 

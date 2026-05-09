@@ -170,7 +170,7 @@ import "internal/stock/repository"  // ❌ 跨 BC 拿仓储
 - **支撑域**：简化 DDD 或直接 CRUD
 - **通用域**：买现成 / 开源
 
-详见 01-strategic-design.md 子域分类。
+详见 [01-strategic-design.md](01-strategic-design.md) 子域分类。
 
 ### 1.9 微服务粒度等于聚合粒度
 

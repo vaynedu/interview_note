@@ -473,7 +473,7 @@ async function handle(req) {
 }
 ```
 
-详见 06-edge-computing。
+详见 [06-edge-computing.md](06-edge-computing.md)。
 
 ## 七、爬虫与 Bot 管理
 

@@ -522,7 +522,7 @@ T1 醒来，写入数据，token=1 → 存储 max(2)>1 拒绝
 - 不区分单机 vs 分布式限流
 
 ### 追问点
-- 分布式限流怎么做？→ Redis Lua（详见 redis-20）
+- 分布式限流怎么做？→ Redis Lua（详见 [redis-20.md](redis-20.md)）
 - 令牌桶 Java 实现？→ Guava RateLimiter
 
 ### 背诵版

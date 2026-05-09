@@ -553,7 +553,7 @@ flowchart LR
 
 **答**：拆 PR / 用 feature branch / 灰度发布。
 
-详见 13-engineering/01-code-review.md。
+详见 [13-engineering/01-code-review.md](../13-engineering/01-code-review.md)。
 
 ### Q4: 估时不准怎么办？
 
@@ -568,7 +568,7 @@ flowchart LR
 
 **答**：用 ROI 表达 + 替代方案 + 升级。
 
-详见 15-leadership/02-business-product-thinking.md。
+详见 [15-leadership/02-business-product-thinking.md](../15-leadership/02-business-product-thinking.md)。
 
 ### Q6: 站会怎么开才有效？
 

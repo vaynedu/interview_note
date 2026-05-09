@@ -536,7 +536,7 @@ Order Cancelled     → Payment 退款、库存释放
 | 失败处理 | 整体失败 | 重试/补偿 |
 | 适用 | 同上下文紧密协作 | 跨聚合/跨上下文 |
 
-详见 05-CQRS 与事件溯源 篇。
+详见 [05-cqrs-eventsourcing.md](05-cqrs-eventsourcing.md) CQRS 与事件溯源 篇。
 
 ## 九、聚合设计 Checklist
 

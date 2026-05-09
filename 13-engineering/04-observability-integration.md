@@ -565,7 +565,7 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 go tool pprof http://localhost:6060/debug/pprof/heap
 ```
 
-详见 01-go-language/06-performance。
+详见 [01-go-language/06-performance/](../01-go-language/06-performance/)。
 
 ## 十、Step 9：OTel Collector 部署
 
