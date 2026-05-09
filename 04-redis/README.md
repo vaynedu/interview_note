@@ -1,11 +1,16 @@
 # Redis
 
-> 后端面试核心中间件之一。本目录按"架构原理 + 数据结构 + 持久化 + 复制 + 缓存 + 锁 + 调优 + 场景"组织，不按命令切。
+> 后端面试核心中间件之一。本目录按"架构原理 + 数据结构 + 持久化 + 复制 + 缓存 + 锁 + 调优 + 场景 + 多级缓存"组织，不按命令切。
+
+## ★ 总览地图
+
+> **新人/复习者优先看** [00-redis-map.md](00-redis-map.md)：知识树 / 题型分类（基础/中级/资深）/ 学习路径 / 系统设计中的角色 / 线上排查地图 / 答题模板。
 
 ## 目录
 
 | # | 文件 | 涵盖 |
 | --- | --- | --- |
+| **00** | **[Redis 知识地图 ★](00-redis-map.md)** | **总览：知识树 / 题型分类 / 学习路径 / 系统设计角色 / 排查地图 / 答题模板** |
 | 01 | [架构与原理](01-architecture.md) | 单线程模型 / 事件循环 / 为什么快 / IO 多路复用 / 6.0 多线程 IO |
 | 02 | [数据结构](02-data-structures.md) | String/List/Hash/Set/ZSet + Stream/HyperLogLog/Geo/Bitmap / 底层编码 / 场景 |
 | 03 | [持久化](03-persistence.md) | RDB / AOF / 混合 / fork 与 COW / 重写 |
@@ -16,6 +21,7 @@
 | 08 | [场景实战](08-scenarios.md) | 排行榜 / 计数器 / 限流 / 队列 / 布隆 / 地理 / Pub-Sub / 会话 |
 | 09 | [线上案例](09-production-cases.md) | 热 key / 大 key / 内存打满 / 慢查询 / 阻塞命令 / fork COW |
 | 10 | [缓存一致性](10-cache-consistency-design.md) | Cache Aside / 延迟双删 / binlog 订阅 / 强一致读 / 删除失败重试 |
+| 11 | [多级缓存](11-multi-tier-cache.md) | 多级缓存 + Go 本地缓存对比（Ristretto/BigCache/freecache）+ 热点检测 |
 
 ## 高频面试题（跨章索引）
 
@@ -25,7 +31,7 @@
 - 主从同步流程？为什么有全量+增量两种？（→ 04）
 - Cluster 16384 slot 怎么定的？为什么不是 65536？（→ 04）
 - 缓存击穿/穿透/雪崩怎么防？双删为什么不彻底？（→ 05）
-- Redis 分布式锁怎么实现？Redlock 争议？（→ 06）
+- Redis 分布式锁怎么实现？Redlock 争议？（→ 06 + ../06-distributed/04）
 - 内存淘汰 8 种策略？过期 key 是怎么删除的？（→ 07）
 - 怎么用 Redis 做限流？滑动窗口怎么实现？（→ 08）
 - Pipeline 和事务区别？Lua 脚本场景？（→ 跨章）
@@ -33,9 +39,27 @@
 - Redis 内存打满、慢查询、fork 抖动怎么处理？（→ 09）
 - 缓存一致性为什么常用先写 DB 再删缓存？（→ 10）
 - 删除缓存失败怎么办？延迟双删和 binlog 订阅怎么选？（→ 10）
+- 多级缓存怎么设计？本地缓存 Ristretto/BigCache 怎么选？（→ 11）
+
+## 学习顺序
+
+1. 先看 [00-redis-map.md](00-redis-map.md) 建立总图
+2. 按 01-04 学**机制**（架构 / 数据结构 / 持久化 / 集群）
+3. 学 05-06 学**核心场景**（缓存 / 锁）
+4. 学 07-08 学**调优 + 实战场景**
+5. 学 09-11 学**资深题**（生产事故 / 一致性 / 多级缓存）
+6. 用 [99-meta/redis-20.md](../99-meta/redis-20.md) 速记面试题
+7. 综合实战看 [10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
 
 ## 设计原则
 
 - **每篇独立可读**，不强制跨文件跳转
 - **图文并茂**，关键流程用 Mermaid
 - **场景驱动**，原理服务于"什么时候用、怎么用、坑在哪"
+
+## 与其他模块关联
+
+- 缓存专题汇总：[99-meta/01-cross-topic-index.md](../99-meta/01-cross-topic-index.md)
+- 分布式锁三方对比：[06-distributed/04-lock.md](../06-distributed/04-lock.md)
+- 速记题集：[99-meta/redis-20.md](../99-meta/redis-20.md)
+- 综合实战：[10-system-design/16-high-concurrency-scenarios.md](../10-system-design/16-high-concurrency-scenarios.md)
