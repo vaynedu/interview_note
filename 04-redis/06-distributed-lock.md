@@ -1,6 +1,151 @@
 # Redis · 分布式锁
 
 > SETNX / Redlock 算法 / 看门狗续约 / 公平锁 / 红锁争议 / Redisson / 实战陷阱
+>
+> 三方对比（Redis / ZK / etcd）见 [`../06-distributed/04-lock.md`](../06-distributed/04-lock.md)。
+
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **原子加锁** - `SET key value NX PX ttl`：互斥 + 自动过期三合一原子操作
+2. **唯一持有者标识** - `value` = UUID + 客户端 ID，**解锁时校验防误解**
+3. **Lua 原子解锁** - GET 校验 + DEL 在同一 Lua 脚本：**防 GET 后被抢、DEL 错锁**
+4. **看门狗续约** - 后台 goroutine 定时 PEXPIRE：**防业务超过 TTL 锁被自动释放**
+
+### 核心本质（必懂）
+
+> Redis 分布式锁的本质是 **"在 AP 系统上做互斥，永远不可能完美强一致"**：
+>
+> - **Redis 主从是异步复制**：CAP 里牺牲 C 保 A 的必然
+> - **主从切换瞬间会丢锁**：已加锁但未复制到从节点 → 主挂从升 → 锁不见了
+> - **只能"概率小到业务可接受 + 业务幂等兜底"**
+>
+> **关键事实**：
+> - 想要强一致 → 用 etcd / ZooKeeper（CP 系统）
+> - 用 Redis 锁 → 业务必须**接受极小概率**的并发持锁
+> - **Redlock 不能根本解决**（Martin Kleppmann 论证：依赖时钟 + 进程不暂停）
+>
+> **CAP 视角**：
+> - Redis 单实例锁 = AP，主从切换丢
+> - Redlock 多实例 = 仍是 AP（依赖时钟 + 多数派假设）
+> - etcd / ZK = CP，强一致但性能低
+
+### 完整流程（面试必背）
+
+```
+1. 加锁（原子）:
+   SET lock:order:123 <UUID> NX PX 30000
+   - NX: 不存在才设
+   - PX 30000: 30 秒超时
+   - <UUID>: 唯一标识
+
+2. 启动看门狗（业务时长不可控时）:
+   后台 goroutine 每 10 秒（TTL/3）执行:
+     EVAL "if GET == val then PEXPIRE end" → 续 30s
+
+3. 业务执行:
+   ... do work ...
+
+4. 解锁（Lua 原子）:
+   EVAL "
+     if redis.call('GET', KEYS[1]) == ARGV[1] then
+       return redis.call('DEL', KEYS[1])
+     else
+       return 0
+     end
+   " 1 lock:order:123 <UUID>
+
+5. 异常路径:
+   - 客户端崩溃 → 看门狗停 → TTL 到期 → 锁自动释放
+   - GC 暂停 35s（TTL 30s）→ 锁过期 → 别人拿到锁 → A 恢复后 GET 校验失败 → 不会误解
+   - 主从切换 → 极小概率两个客户端同时持锁 → 业务幂等兜底
+   - Redlock: 多个 Redis 实例多数派加锁（实际工程用得少）
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. 原子加锁（SET NX PX）
+
+```
+错误版本（教训）:
+  SETNX lock 1     # 加锁
+  EXPIRE lock 30   # 设过期
+  → 两步非原子，SETNX 后崩溃 → 锁永久占用
+
+正确版本（2.8+）:
+  SET lock <UUID> NX PX 30000  # 原子三合一
+  - NX: 不存在才设
+  - PX 30000: 30 秒后过期
+  - <UUID>: 唯一标识
+```
+
+#### 2. UUID 唯一持有者（防误解）
+
+```
+T0: A 获取锁 (val=A, TTL 30s)
+T1: A 因 GC 暂停 35s
+T2: 锁过期, B 获取锁 (val=B)
+T3: A 恢复, 直接 DEL → 删的是 B 的锁!
+
+不检查值 → 误删
+检查 value 等于自己的 UUID 才 DEL → 安全
+
+实现:
+  uuid.NewString() + clientID
+  解锁时 GET == 自己 UUID 才 DEL
+```
+
+#### 3. Lua 原子解锁
+
+```
+为什么不能两步:
+  GET lock
+  if val == self: DEL lock
+  → GET 和 DEL 之间锁可能被自动释放 + 别人拿到 → 误删
+
+Lua 脚本（原子）:
+  EVAL "
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      return redis.call('DEL', KEYS[1])
+    else
+      return 0
+    end
+  " 1 lock <UUID>
+
+Redis 单线程执行 Lua，原子保证。
+```
+
+#### 4. 看门狗续约（业务超时防丢锁）
+
+```
+问题:
+  TTL 太短 → 业务没做完锁就过期 → 不互斥
+  TTL 太长 → 客户端崩溃后等很久才能再获取
+
+解决: 后台 goroutine 定时续约
+  ticker 每 TTL/3（如 10s）执行:
+    EVAL "if GET == val then PEXPIRE end"
+  → 业务执行期间 TTL 永不过期
+
+异常处理:
+  - 客户端崩溃 → 看门狗 g 也死 → 锁正常超时释放
+  - GC 暂停 → 看门狗也暂停 → 可能错过续约 → 锁过期
+  → 看门狗减少超时但不能根除丢锁
+
+Java: Redisson 默认开看门狗
+Go: redsync / go-redsync/redsync
+```
+
+### 一句话总结
+
+> Redis 分布式锁的核心是：**SET NX PX 原子加锁 + UUID 标识 + Lua 原子解锁 + 看门狗续约**，
+> 本质是 **AP 系统上的互斥，永远不可能完美强一致**（主从异步复制 → 切换必丢锁）。
+> Redlock 增强但不能根治（时钟 + 进程暂停问题）。
+> **业务幂等是必备兜底**（业务订单号 + DB 唯一索引 + 状态机），
+> 金融级强一致请用 **etcd / ZooKeeper**。
+
+---
 
 ## 一、为什么需要分布式锁
 

@@ -2,6 +2,184 @@
 
 > 5 经典（String/List/Hash/Set/ZSet）+ 4 进阶（Bitmap/HyperLogLog/Geo/Stream）/ 底层编码（SDS/listpack/quicklist/skiplist/intset/hashtable）/ 场景选型
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **类型 vs 编码分离** - 同一个类型（如 List）根据数据量自动选不同底层编码（listpack / quicklist）
+2. **小数据用紧凑编码** - listpack / intset 连续内存，省空间 + CPU 缓存友好
+3. **大数据用专用结构** - hashtable / skiplist / quicklist，O(1) 或 O(log N) 性能
+4. **编码升级单向不可逆** - 从紧凑升级到专用后，即使数据缩小也不会回退
+
+### 核心本质（必懂）
+
+> Redis 数据结构的本质是 **"内存效率 + 操作复杂度"的双重优化**：
+>
+> - **小数据**：连续内存（listpack / intset）→ 省空间 + 缓存友好（CPU L1/L2/L3 命中率）
+> - **大数据**：专用结构（hashtable / skiplist）→ O(1) / O(log N) 性能
+> - **自动升级**：根据数据规模动态选择，对用户透明
+>
+> **关键事实**：
+> - **redisObject 是统一外壳**：所有类型都有 type + encoding 两个字段
+> - **SDS 是字符串基础**：所有字符串场景用 SDS（不是 C 字符串）
+> - **编码升级阈值可配**：list-max-listpack-size / hash-max-listpack-entries 等
+> - **跳表 vs 红黑树**：Redis 选跳表是因为**实现简单 + 范围查询友好 + 并发友好**
+>
+> **设计哲学**：
+> - 不是"一种结构走天下"
+> - 而是"按数据规模动态选最优"
+> - 用户无感知，只用类型 API
+
+### 完整流程（面试必背）
+
+```
+String 编码自动选择:
+  整数（< long）→ int 编码（直接存数字，0 内存开销）
+  短字符串（≤ 44 字节）→ embstr（与 redisObject 一起分配，1 次 alloc）
+  长字符串（> 44 字节）→ raw（独立 SDS，2 次 alloc）
+
+List 编码:
+  小列表（少 + 短）→ listpack（连续内存）
+  大列表 → quicklist（双向链表 + 每个节点是 listpack）
+
+Hash 编码:
+  小 hash（≤ 128 entry + 值 ≤ 64B）→ listpack
+  大 hash → hashtable（数组 + 链表 + 渐进式 rehash）
+
+Set 编码:
+  全是整数 + 数量少 → intset（有序整数数组，二分查找）
+  其他 → hashtable（值为 NULL 的 dict）
+
+ZSet 编码:
+  小 zset → listpack（key + score 紧凑存）
+  大 zset → skiplist + dict 双结构
+    - skiplist: 按 score 排序，范围查询 O(log N)
+    - dict: member → score 的 O(1) 查找
+
+升级触发示例:
+  1. HSET hash field val      # 初始 listpack
+  2. HSET ... × 100 次          # 加到 130 项
+  3. 触发: 130 > 128 listpack 上限 → 自动升级 hashtable
+  4. 后续即使 HDEL 到 1 项也不会回退（单向）
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. SDS（Simple Dynamic String）
+
+```
+为什么不用 C 字符串:
+  C 字符串 \0 结尾:
+    - strlen O(N) 遍历
+    - 不能存二进制（含 \0 截断）
+    - 缓冲区溢出风险（strcpy）
+
+SDS 结构:
+  struct sdshdr {
+      uint64 len;      // 当前长度（O(1) strlen）
+      uint64 alloc;    // 分配空间
+      char[] buf;      // 实际数据（不依赖 \0）
+  }
+
+优势:
+  - O(1) 获取长度
+  - 二进制安全（按 len 读取）
+  - 预分配（小于 1MB 翻倍 / 大于 1MB 加 1MB） → 减少 realloc
+  - 惰性释放 → 减少 free
+```
+
+#### 2. listpack（连续内存的紧凑结构）
+
+```
+代替老的 ziplist（5.0+）:
+  ziplist 有"连锁更新"问题（中间元素改变长度导致后续全部重排）
+  listpack 修复了这个
+
+结构:
+  连续内存块:
+  [总字节数][元素数][元素1][元素2]...[元素n][结束符]
+  每个元素: [编码 + 数据 + 长度]
+    - 编码: 整数 / 短字符串 / 长字符串
+    - 长度: 反向存（从前往后能跳，从后往前也能跳）
+
+优势:
+  - 紧凑（无指针开销）
+  - CPU 缓存友好（连续内存）
+  - 适合小集合（< 100 项）
+
+劣势:
+  - 插入删除 O(N)（要移动）
+  - 不能快速定位（必须从头扫）
+  - 大集合性能差 → 升级为专用结构
+```
+
+#### 3. 跳表（skiplist，ZSet 核心）
+
+```
+为什么 Redis 选跳表（不是红黑树）:
+
+vs 红黑树:
+  树平衡操作复杂（旋转）
+  范围查询要中序遍历（递归）
+  → 跳表实现简单 + 范围查询直观（链表遍历）
+
+vs B+ 树:
+  B+ 树为磁盘场景设计（多叉省 IO）
+  内存场景不需要多叉
+  → 跳表更适合内存
+
+vs 哈希表:
+  哈希不支持排序、范围
+  ZSet 需要按 score 排序
+
+跳表结构:
+  最底层: 完整有序链表
+  上层: 索引层（每两个节点一个上层指针）
+  查找: 从最高层向右走，无法走时降一层
+  → 平均 O(log N)
+
+为什么"概率平衡":
+  插入时随机决定层数（每层 1/2 概率）
+  期望树高 log N
+  实现简单，无旋转
+```
+
+#### 4. dict 渐进式 rehash（哈希表扩容）
+
+```
+问题:
+  hashtable 满了要扩容（2x）
+  100w key 扩容 → 一次 rehash 2 秒卡顿
+
+渐进式 rehash:
+  1. 分配新 hashtable（2x 大小）
+  2. 不立即迁移，标记 rehashidx = 0
+  3. 之后每次操作（GET / SET / DEL）顺带迁移 1 个 bucket:
+     - 从 ht[0][rehashidx] 迁移到 ht[1]
+     - rehashidx++
+  4. 迁移完成 → 释放老 hashtable
+
+期间访问规则:
+  GET: 先查 ht[0]，没找到查 ht[1]
+  SET: 写到 ht[1]（不写老表）
+  DEL: 从 ht[0] 和 ht[1] 都删
+
+代价:
+  - rehash 期间内存翻倍
+  - 操作稍慢（要查两个表）
+  - 但避免单次卡顿
+```
+
+### 一句话总结
+
+> Redis 数据结构的核心是：**类型 vs 编码分离 + 小数据紧凑（listpack/intset）+ 大数据专用（skiplist/hashtable）+ 渐进式 rehash 防卡顿**，
+> 本质是 **"内存效率 + 操作复杂度"的双重优化**：根据数据规模动态选最优编码，对用户透明。
+> **关键基础**：SDS（O(1) 长度 + 二进制安全 + 预分配）支撑所有字符串场景；
+> **关键设计**：跳表代替红黑树（实现简单 + 范围友好 + 并发友好）；
+> **关键技巧**：渐进式 rehash 把扩容代价摊到每次操作。
+
+---
+
 ## 一、全景图
 
 ```mermaid
