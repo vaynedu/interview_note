@@ -2,6 +2,153 @@
 
 > 不丢消息全链路（生产 → 存储 → 消费）/ acks 三种 / min.insync.replicas / 消费者 offset 提交时机 / 三种语义
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **三端配合不可单点**：生产者 acks=all + Broker RF≥3 + min.insync≥2 + 消费者手动 commit + 业务幂等
+2. **生产端：acks + 重试 + 幂等 Producer** 防丢防重
+3. **Broker 端：副本 + ISR + HW + unclean.leader.election=false** 防数据丢
+4. **消费端：手动 commit + 业务幂等** 防漏消费防重复
+
+### 核心本质（必懂）
+
+> "消息不丢"不是某个配置就能解决，**本质是三端协议的一致性问题**：
+>
+> - **生产端**：消息到了 Broker 才算"发出"（acks 决定到几个副本算成功）
+> - **Broker 端**：副本同步 + 持久化策略决定"已发出"的消息能否抗故障
+> - **消费端**：消费完业务 + commit offset 才算"消费成功"（不能反过来）
+>
+> **CAP 视角**：
+> - acks=all + 同步刷盘 = 强一致（CP）但 TPS 损失 30-50%
+> - acks=1 + 异步刷盘 = 高吞吐（AP）但极端故障会丢
+> - **业内主流**：acks=all + ISR≥2 + 业务幂等兜底 = 工程上"不丢"
+>
+> **零丢失是不可能的**，只能"丢失概率小到业务可接受 + 对账兜底"。
+
+### 完整流程（面试必背）
+
+```
+端到端"不丢消息"链路:
+
+1. 生产端发送:
+   Producer.send(msg)
+     → 内部缓冲（内存 batch）
+     → 网络发送到 Broker Leader
+     → Leader 写本地日志
+     → Leader 等待 ISR 副本同步（acks=all）
+     → 多数派同步完成 → 返回 Producer ACK
+     → Producer 收到 ACK → 业务认为"已发"
+
+2. Broker 持久化:
+   Leader 收到消息
+     → 追加到本地 segment（先写 OS PageCache）
+     → 通知 Followers 拉取
+     → Followers 拉取 + 写本地
+     → Leader 计算 HW（取所有 ISR 的最小 LEO）
+     → HW 推进 → 该消息对消费者可见
+     → 周期 fsync 刷盘（log.flush.interval.ms）
+
+3. 消费端消费:
+   Consumer.poll() → 拉取消息
+     → 业务处理（业务幂等！）
+     → 处理成功 → consumer.commitSync() 提交 offset
+     → 处理失败 → 不 commit → 下次重新消费
+
+4. 异常路径:
+   - Producer 重试 → Broker 收到重复 → 幂等 Producer 去重（PID + 序列号）
+   - Broker Leader 挂 → Controller 选新 Leader（只从 ISR 选）→ 已 HW 的消息不丢
+   - Consumer 挂 → Rebalance → 新 Consumer 接管 → 从上次 commit 的 offset 续读
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. 生产端（防丢三件套）
+
+```
+acks=all（不丢核心）:
+  Leader 等所有 ISR 都同步完才返回 ACK
+  对比: acks=1 (只等 Leader) / acks=0 (不等)
+
+retries + max.in.flight.requests=1（防丢防乱序）:
+  retries=Integer.MAX_VALUE 无限重试
+  max.in.flight.requests=1 保单分区顺序（多了重试会乱序）
+
+enable.idempotence=true（幂等 Producer）:
+  Broker 用 PID + 分区 + 序列号去重
+  防止网络重试造成消息重复
+  → 单分区精确一次（exactly-once）
+
+代价:
+  acks=all: TPS 损失 30-50%
+  → 业务侧权衡（金融必开，日志类可关）
+```
+
+#### 2. Broker 端（副本 + ISR + HW）
+
+```
+副本机制（RF=3）:
+  每个分区有 1 Leader + N Follower
+  Leader 处理读写，Followers 异步拉取
+
+ISR（In-Sync Replicas）:
+  与 Leader 保持同步的副本集合
+  落后超过 replica.lag.time.max.ms（默认 30s）→ 踢出 ISR
+  min.insync.replicas=2: 至少 2 个 ISR 才允许写入（Leader + 1 Follower）
+
+HW（High Watermark）:
+  Leader 维护，等于所有 ISR 中最小 LEO
+  Consumer 只能读到 HW（< HW 的消息已被多数派持久化）
+  HW 之前的消息不会丢
+
+unclean.leader.election.enable=false（关键）:
+  Leader 挂时只从 ISR 中选新 Leader
+  防止 OSR（不同步副本）当 Leader 导致已提交消息丢失
+  → 必须配置 false
+```
+
+#### 3. 消费端（手动 commit + 幂等）
+
+```
+自动 commit 的坑:
+  poll() 拿消息 → 后台定时 commit offset → 业务处理
+  顺序错: commit 比业务快 → 业务还没处理完就 commit → crash 后跳过这批 → 丢消息
+
+手动 commit（必须）:
+  poll() 拿消息 → 业务处理成功 → 手动 commit
+  顺序对: 业务先于 commit
+  代价: 可能重复消费（commit 前 crash → 下次重读）→ 业务幂等兜底
+
+业务幂等的实现:
+  - DB 唯一索引（订单号）
+  - Redis SETNX 去重
+  - 状态机前置条件（UPDATE ... WHERE status=expected）
+```
+
+#### 4. 业务幂等（最后兜底）
+
+```
+为什么幂等是兜底:
+  即使 Kafka EOS（Exactly Once Semantics）也只在 Kafka 内部
+  跨服务（订单 → 支付 → 库存）EOS 失效
+  → 业务必须自己实现幂等
+
+实战:
+  - Kafka at-least-once 默认 + 业务幂等 → 99% 场景
+  - Kafka EOS（事务消息）+ 业务幂等 → 1% 严苛场景（金融对账）
+
+绝对不能依赖 MQ 的"不重复"，必须业务幂等。
+```
+
+### 一句话总结
+
+> MQ 不丢消息的核心是：**三端配合 = acks=all + ISR≥2 + unclean.leader.election=false + 手动 commit + 业务幂等**，
+> 本质是 **CAP 里牺牲性能换一致性**（acks=all 损失 30-50% TPS）。
+> 零丢失不可能，只能"概率小到业务可接受 + 对账兜底"。
+> **业务幂等是所有 MQ 方案的基石**，不能靠 MQ 自己保证 exactly-once。
+
+---
+
 ## 一、消息全链路与丢失风险
 
 ```mermaid
