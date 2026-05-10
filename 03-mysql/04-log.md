@@ -2,6 +2,202 @@
 
 > 日志是 MySQL 可靠性的核心：回滚靠 undo，崩溃恢复靠 redo，复制和恢复靠 binlog。
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **redo log（InnoDB 引擎层）**：物理日志（记录"哪页哪偏移改成什么"），WAL 写入，循环覆盖，**保崩溃恢复**
+2. **undo log（InnoDB 引擎层）**：逻辑日志（记录"如何还原"），**保事务回滚 + MVCC 历史版本**
+3. **binlog（Server 层）**：逻辑日志（记录 SQL 或行变更），**保主从复制 + 数据归档 + 闪回**
+4. **两阶段提交（2PC）**：redo prepare → binlog 写盘 → redo commit，**保两个日志的一致性**
+
+### 核心本质（必懂）
+
+> MySQL 三种日志的本质是 **"职责分层"**：
+>
+> - **redo 在 InnoDB 层**：解决"已 commit 的事务在 crash 后不丢"的问题
+>   - WAL（Write-Ahead Log）：先写日志，再异步刷脏页
+>   - 物理日志：记录"页的字节级修改"，恢复时重放即可
+> - **undo 在 InnoDB 层**：解决"事务可回滚 + 读老版本"的问题
+>   - 逻辑日志：记录"逆操作"
+>   - MVCC 沿 undo 链回溯历史版本
+> - **binlog 在 Server 层**：解决"主从复制 + 数据归档 + 闪回"的问题
+>   - 逻辑日志：记录 SQL（STATEMENT）或行变更（ROW）
+>   - 是否记录与引擎无关（MyISAM 也有 binlog）
+>
+> **为什么需要 2PC**：
+> - redo 在引擎层、binlog 在 Server 层，两个独立日志
+> - 不协调 → crash 后两者状态不一致 → 主从永久不一致
+> - 2PC 让"redo 写成功 + binlog 写成功"原子化
+>
+> **CAP 视角**：
+> - 双 1 配置（sync_binlog=1 + innodb_flush_log_at_trx_commit=1）= 强持久（CP）+ TPS 损失大
+> - 业内主流：核心业务双 1，非核心 sync_binlog=0/100，损失换性能
+
+### 完整流程（面试必背）
+
+```
+事务 commit 完整流程（2PC + 组提交）:
+
+1. InnoDB Prepare 阶段:
+   - redo log 写入 buffer
+   - redo log 状态 = prepare
+   - fsync redo log（持久化到磁盘）
+   - undo log 也已写好（伴随事务执行）
+
+2. Server 写 binlog:
+   - binlog 写入 binlog cache
+   - fsync binlog 到磁盘（受 sync_binlog 控制）
+
+3. InnoDB Commit 阶段:
+   - redo log 状态 = commit
+   - 不需要立刻 fsync（已在 prepare 阶段刷盘）
+
+4. Crash Recovery 逻辑:
+   - 扫描 redo log
+   - 对每个 prepare 的事务:
+     - binlog 中能找到对应记录 → 自动 commit
+     - binlog 中找不到 → rollback
+   - 确保 redo + binlog 状态一致
+
+5. 数据页刷盘（异步）:
+   - Buffer Pool 中脏页定期/触发刷到磁盘
+   - 与事务 commit 解耦
+   - WAL 保证: 即使脏页未刷，redo log 已持久化 → crash 后能恢复
+
+binlog 三种格式:
+  STATEMENT: 存 SQL 原文（紧凑但不确定函数主从不一致）
+  ROW（推荐）: 存每行变更前后值（一致性强 + 支持闪回）
+  MIXED: 默认 STATEMENT，遇不确定切 ROW
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. redo log（崩溃恢复的核心）
+
+```
+WAL（Write-Ahead Log）:
+  规则: 修改数据前必须先写 redo log
+  目的: 即使脏页没刷盘，redo 已持久化 → crash 后能恢复
+
+物理日志:
+  记录"哪个页哪个偏移改成什么字节"
+  例: page 5, offset 100, 旧 'A' → 新 'B'
+  恢复时直接重放，幂等
+
+文件结构:
+  ib_logfile0, ib_logfile1（默认 48MB × 2）
+  循环写: 写满 0 → 写 1 → 回到 0（覆盖）
+  innodb_log_file_size 决定容量（生产 1-4GB）
+
+刷盘策略（innodb_flush_log_at_trx_commit）:
+  = 1: 每次 commit fsync（不丢，默认）
+  = 0: 每秒刷（崩溃丢 1s）
+  = 2: 每次写 OS buffer，每秒 fsync（宿主不挂 ≈ 1）
+
+崩溃恢复:
+  从 checkpoint LSN 开始扫 redo
+  对应页已是新版本 → 跳过
+  老版本 → apply redo
+```
+
+#### 2. undo log（回滚 + MVCC）
+
+```
+逻辑日志:
+  INSERT → 记录"删除该行"
+  UPDATE → 记录"改回原值"
+  DELETE → 记录"插入该行"
+
+两个用途:
+  1. 事务回滚: ROLLBACK → 按 undo 反向执行
+  2. MVCC: SELECT 沿 DB_ROLL_PTR → undo 链回溯历史版本
+
+回收时机:
+  事务提交后不能立即删（其他事务的 ReadView 可能要用）
+  purge 线程异步清理: 当所有活跃 ReadView 的 min_trx_id > undo.trx_id 时
+
+存储位置:
+  共享表空间 ibdata（默认）
+  独立 undo 表空间（5.6+ 推荐）
+  → 长事务会让 ibdata 涨爆（必须监控 history list length）
+```
+
+#### 3. binlog（复制 + 归档）
+
+```
+Server 层日志:
+  与存储引擎无关
+  MyISAM / InnoDB 都用同一个 binlog
+
+3 种格式:
+  STATEMENT: 存 SQL 原文
+    ✓ 紧凑
+    ✗ NOW() / RAND() / UUID() 主从不一致
+    ✗ 行触发器复制不准
+
+  ROW（推荐，5.7+ 主流）:
+    存每行变更前后值
+    ✓ 主从严格一致
+    ✓ 支持闪回（解析 binlog 反向 SQL）
+    ✗ 大事务 binlog 大
+
+  MIXED:
+    默认 STATEMENT，遇不确定切 ROW
+
+3 种用途:
+  1. 主从复制: 主库 binlog → 从库 SQL 线程重放
+  2. 数据归档: 增量备份
+  3. 闪回 / 恢复: 解析 binlog 找历史变更
+
+刷盘策略（sync_binlog）:
+  = 1: 每次事务 fsync（不丢，金融场景）
+  = 0: OS 决定（性能最好，崩溃可能丢）
+  = N: 每 N 个事务 fsync（折中）
+```
+
+#### 4. 两阶段提交（必懂）
+
+```
+为什么需要 2PC:
+  redo 在 InnoDB 层、binlog 在 Server 层
+  两者必须状态一致，否则:
+  - redo commit + binlog 没写 → 从库少一条
+  - binlog 写了 + redo 没 commit → 从库多一条
+
+流程（commit 时）:
+  ① InnoDB Prepare:
+     redo log 状态 = prepare
+     fsync redo
+
+  ② Server 写 binlog:
+     binlog 落盘（受 sync_binlog 控制）
+
+  ③ InnoDB Commit:
+     redo log 状态 = commit
+     （不需立刻 fsync，已在 prepare 时刷盘）
+
+崩溃恢复裁决:
+  redo prepare + binlog 完整 → commit（认为成功）
+  redo prepare + binlog 缺   → rollback
+  redo 只 prepare 没 commit  → 看 binlog 决定
+
+组提交（Group Commit）优化:
+  收集多个事务一起 fsync
+  binlog_group_commit_sync_delay 延迟收集
+  → TPS 从几千提升到几万
+```
+
+### 一句话总结
+
+> MySQL 三种日志的核心是：**redo（物理 / WAL / 崩溃恢复）+ undo（逻辑 / 回滚 + MVCC）+ binlog（逻辑 / 复制 + 归档）**，
+> 本质是**职责分层**：redo / undo 在 InnoDB 引擎层、binlog 在 Server 层。
+> **两阶段提交**保证 redo 与 binlog 状态一致（防主从不一致）。
+> **双 1 配置**（sync_binlog=1 + innodb_flush_log_at_trx_commit=1）= 不丢但 TPS 损失，金融必开。
+> **组提交**让"双 1"性能从几千 TPS 提升到几万。
+
+---
+
 ## 一、核心原理
 
 ### 1. 三类核心日志
