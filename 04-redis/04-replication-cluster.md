@@ -28,6 +28,121 @@ flowchart LR
 
 ## 二、主从复制
 
+### 2.0 核心提炼（5 段式）
+
+#### 核心机制（4 条必背）
+
+1. **异步复制** - Master 写完立即返回，**不等 Slave 确认**（保性能 + 可用性）
+2. **PSYNC 增量同步** - Slave 带上 `runID + offset` 续传，避免每次全量（基于 replication backlog 环形缓冲）
+3. **全量同步兜底** - offset 不在 backlog 内 → fork + BGSAVE → 传 RDB → 加载 → 增量追平
+4. **从节点只读** - 默认 `replica-read-only yes`，写只走 Master，读可分流到 Slave
+
+#### 核心本质（必懂）
+
+> Redis 主从是**异步复制**，是 **CAP 里牺牲强一致性（C）保可用性（A）+ 性能** 的必然选择。
+> Master 写成功 ≠ 所有 Slave 都有这条数据。
+>
+> **后果**：
+> - **主从切换瞬间会丢数据**（已 ack 但未复制的写）
+> - **读写分离有不一致窗口**（写后立即读 Slave 可能读到旧值）
+> - **分布式锁丢锁**（详见 [`../06-distributed/04-lock.md`](../06-distributed/04-lock.md) 第四章）
+>
+> 要强一致 → 用 Raft 系统（etcd / Consul），Redis 永远不可能强一致。
+
+#### 完整流程（面试必背）
+
+```
+新 Slave 上线 / 重连:
+  1. Slave → Master: PSYNC <runID> <offset>
+                     首次连接: PSYNC ? -1
+  2. Master 判断:
+     - runID 不匹配 / offset 不在 backlog 内 → 全量同步
+     - runID 匹配 + offset 在 backlog 内 → 增量同步
+
+  3a. 全量同步:
+      - Master fork 子进程 BGSAVE 生成 RDB
+      - 期间新写入存到 replication backlog（环形缓冲）
+      - RDB 传给 Slave + Slave 加载到内存
+      - Master 把 backlog 里的增量发给 Slave
+      - 进入持续增量复制
+
+  3b. 增量同步:
+      - Master 直接发送 backlog 中 offset 之后的命令
+      - Slave 接收并执行
+
+  4. 持续阶段:
+      - Master 每写一条命令 → 异步推给所有 Slave
+      - Slave 执行命令更新自己的数据
+```
+
+#### 4 条核心机制 - 逐点讲透
+
+##### 1. 异步复制（性能 vs 一致性的取舍）
+
+```
+同步复制（不选）:
+  Master 等所有 Slave 写完才返回客户端 → RT 高 + 一个 Slave 慢拖累全局
+
+半同步（WAIT 命令）:
+  WAIT n timeout: 等至少 n 个 Slave 确认
+  → 提供"半同步"语义，但仍非强一致
+
+异步（默认）:
+  Master 写完立即返回 → 性能最好
+  代价: 主从切换会丢数据
+```
+
+##### 2. PSYNC 增量同步（核心优化）
+
+```
+replication backlog: 环形缓冲（默认 1MB，生产建议 64MB-256MB）
+  - 记录最近的写命令
+  - 每条命令带 offset
+
+Slave 重连时:
+  - 报告自己的 offset
+  - Master 检查 offset 是否还在 backlog 范围内
+  - 在 → 增量
+  - 超出 → 全量
+
+为什么默认 1MB 太小:
+  网络抖动几秒 → 累积命令超 1MB → 必须全量
+  → 生产必调大
+```
+
+##### 3. 全量同步（fork + RDB）
+
+```
+fork 子进程:
+  - 利用 Copy-On-Write 共享内存
+  - 子进程异步生成 RDB 不阻塞主线程
+  - 但: 内存大 + 写多 → COW 开销大 → fork 慢 + 抖动
+
+复制风暴:
+  1 Master 带 10 个 Slave 同时全量 → 网络打爆
+  → 解决: 树形复制（中间从带子从）
+```
+
+##### 4. 从节点只读 + 读写分离
+
+```
+读写分离收益:
+  Master 写 → 多个 Slave 读
+  扩展读容量 5-10x
+
+风险:
+  写后立即读 Slave 可能读到旧值（异步延迟）
+  → 业务侧要么强制读主，要么接受"短暂不一致"
+```
+
+#### 一句话总结
+
+> Redis 主从复制的核心是：**异步复制 + PSYNC 增量同步 + RDB 全量兜底 + 从节点只读**，
+> 本质是 **CAP 里选 AP（牺牲 C）**，主从切换必然丢数据，读写分离必然有延迟。
+> 适合**读多写少 + 容忍最终一致**的场景；要强一致用 Raft 系统。
+
+---
+
 ### 2.1 拓扑
 
 ```mermaid
@@ -265,6 +380,163 @@ sequenceDiagram
 - 大规模业务用 **Cluster**
 
 ## 四、Redis Cluster（分片集群）
+
+### 4.0 核心提炼（5 段式）
+
+#### 核心机制（4 条必背）
+
+1. **16384 slot 哈希分片** - `CRC16(key) % 16384` 决定数据落到哪个 slot，slot 分配给 Master 节点
+2. **去中心化（Gossip 协议）** - 节点间周期性交换状态信息，无主控，每个节点都知道集群全貌
+3. **每分片主从结构** - 每个 Master 配 N 个 Slave，挂了自动选新主（基于 ZAB-like 协议）
+4. **Smart Client 直连** - 客户端缓存 slot → node 路由表，直连对应节点；遇 MOVED 重定向就更新缓存
+
+#### 核心本质（必懂）
+
+> Redis Cluster 是**分片 + 主从 + 去中心化**的 AP 系统：
+>
+> - **分片**：解决单机容量瓶颈（GB → TB）
+> - **主从**：每分片高可用
+> - **去中心化**：客户端直连，无 Proxy 单点
+> - **AP 选择**：网络分区时少数派分片不可用（保一致性），多数派继续服务
+>
+> **关键约束**：
+> - 跨 slot 操作不支持（MGET / 事务 / Lua KEYS 必须同 slot）
+> - 跨分片不支持事务（除非用 Hash Tag 强制同 slot）
+> - 仍是 AP，主从切换瞬间丢数据（与单机主从同问题）
+
+#### 完整流程（面试必背）
+
+```mermaid
+flowchart LR
+    Cmd[SET user:1 alice] --> Hash["CRC16(user:1) = 12345"]
+    Hash --> Slot["12345 % 16384 = 12345"]
+    Slot --> Lookup{"slot 12345 在哪?"}
+    Lookup -->|本地缓存命中| Direct[直接发到目标节点]
+    Lookup -->|缓存过期| Other[发任意节点]
+    Other --> Moved["返回 MOVED 12345 IP:PORT"]
+    Moved --> Update[客户端更新缓存]
+    Update --> Retry[重试发到正确节点]
+```
+
+**6 步流程**：
+
+```
+1. 客户端启动: 连任一节点，CLUSTER SLOTS 拉取路由表
+   缓存: slot → master node 映射
+
+2. 写入 SET user:1 alice:
+   - CRC16("user:1") = 12345
+   - 12345 % 16384 = slot 12345
+   - 查路由表: slot 12345 在 node-2
+   - 直接发到 node-2
+
+3. node-2 处理:
+   - 自己负责该 slot → 执行
+   - 不负责 → 返回 MOVED 12345 <ip>:<port>
+
+4. MOVED 重定向:
+   - 客户端更新本地路由表
+   - 重发请求到正确节点
+
+5. 数据迁移期（resharding）:
+   - 部分 slot 在两个节点间迁移
+   - 老节点返回 ASK 重定向（临时，不更新缓存）
+   - 新节点处理时需先 ASKING 命令
+
+6. 节点故障:
+   - Slave 检测 Master 失联
+   - Gossip 协议告知集群
+   - 多数派同意 → Slave 晋升 Master
+   - 客户端连到旧 Master 失败 → 重连其他节点 → 收到 MOVED → 更新路由
+```
+
+#### 4 条核心机制 - 逐点讲透
+
+##### 1. 16384 slot（为什么不是 65536？）
+
+```
+作者 antirez 解释:
+
+1. 心跳包大小（关键）:
+   节点间 Gossip 互发节点状态位图（每节点 1 bit）
+   16384 bit = 2KB / 65536 bit = 8KB
+   集群越大心跳越频繁 → 4x 差距对带宽影响显著
+
+2. 集群规模:
+   Redis Cluster 推荐 ≤ 1000 节点
+   16384 / 1000 ≈ 16 slot/节点 → 足够细粒度
+
+3. CRC16 输出范围:
+   CRC16 是 16 bit = 65536
+   对 16384 取模损失精度极小（<0.01%）
+
+→ 16384 是性能 + 实用性的平衡点
+```
+
+##### 2. Gossip 协议（去中心化的核心）
+
+```
+工作方式:
+  - 每个节点定期（默认每秒）随机选几个节点交换信息
+  - 信息: 节点列表、slot 分配、节点状态（正常/疑似下线/下线）
+  - 几轮 Gossip 后所有节点状态收敛
+
+优点:
+  - 无中心节点 → 无单点故障
+  - 自我修复 → 节点掉线自动剔除
+
+缺点:
+  - 集群越大 Gossip 越占带宽
+  - 状态同步有延迟（最终一致）
+  → 推荐节点数 ≤ 1000
+```
+
+##### 3. 主从故障转移
+
+```
+检测:
+  - 节点间 PING/PONG 失败 → 标记 PFAIL（疑似下线）
+  - 多数 Master 都标记 PFAIL → 升级为 FAIL（确认下线）
+
+选举:
+  - 该 Master 的所有 Slave 中:
+    - 复制 offset 最大的优先（数据最新）
+    - 优先级 (slave-priority) 高的优先
+  - 选出新 Master
+  - 接管原 Master 的所有 slot
+
+时间:
+  - 默认 cluster-node-timeout = 15s
+  - 故障切换通常 30s 内完成
+```
+
+##### 4. Smart Client + MOVED/ASK
+
+```
+MOVED（永久重定向）:
+  slot 已稳定属于另一个节点
+  → 客户端必须更新本地路由缓存
+  → 后续请求直接发到新节点
+
+ASK（临时重定向）:
+  slot 正在迁移中
+  → 客户端临时跳转，不更新路由缓存
+  → 必须先发 ASKING 命令再发原命令
+  → 迁移完成后会收到 MOVED
+
+为什么不用 Proxy（如 Codis）？
+  Proxy 是单点（即使 Proxy 集群也是单点）
+  Smart Client 直连性能最优
+  代价: 客户端实现复杂（go-redis、Jedis cluster mode 都已封装）
+```
+
+#### 一句话总结
+
+> Redis Cluster 的核心是：**16384 槽位 CRC16 哈希分片 + Gossip 协议去中心化 + 每分片主从 + Smart Client 直连**，
+> 本质是**分片 + AP**：解决了单机容量瓶颈和高可用，但**牺牲了跨 slot 操作能力和强一致性**。
+> 适合**海量数据 + 高并发 + 容忍最终一致**的场景；要强一致或事务仍需 Hash Tag 或换 Raft 系统。
+
+---
 
 ### 4.1 拓扑
 
