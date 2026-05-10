@@ -34,6 +34,123 @@
 
 ### 3. MVCC
 
+#### 3.0 核心提炼（5 段式）
+
+##### 核心机制（4 条必背）
+
+1. **隐藏字段** - 每行隐藏 3 个字段：`DB_TRX_ID`（最近修改事务 ID）/ `DB_ROLL_PTR`（指向 undo log）/ `DB_ROW_ID`（无主键时用）
+2. **undo log 链** - 一行的所有历史版本组成单链表，沿 `DB_ROLL_PTR` 回溯
+3. **Read View 快照** - 事务的"可见性视角"：`m_ids` 活跃事务列表 + `min_trx_id` + `max_trx_id` + `creator_trx_id`
+4. **可见性判断** - 5 条规则决定每个版本是否对当前事务可见，不可见则沿 undo 链回溯
+
+##### 核心本质（必懂）
+
+> MVCC 的本质是**用空间换并发**：
+>
+> - 每个写操作不修改原数据，而是**追加新版本 + 保留旧版本到 undo log**
+> - 读时按事务的 Read View 找"自己能看到的版本"
+> - **读不加锁、写不阻塞读、读不阻塞写** → 高并发的根本
+>
+> RC vs RR 的本质差异 = **Read View 创建时机**：
+> - **RC**：每次 SELECT 都创建新 Read View → 每次都看最新已提交
+> - **RR**：事务第一个 SELECT 创建 Read View 后复用 → 整个事务一致快照
+>
+> **代价**：长事务 → undo 链很长 → 回溯成本 + purge 跟不上 → ibdata 涨爆。
+
+##### 完整流程（面试必背）
+
+```
+事务 T 执行 SELECT * FROM t WHERE id = 1:
+
+1. 找到主键索引上的记录 R（最新版本）
+
+2. 取出 R 的 DB_TRX_ID（假设为 30）
+
+3. 用 T 的 Read View 判断 R 是否可见:
+   ① R.trx_id == creator_trx_id → 可见（自己改的）
+   ② R.trx_id < min_trx_id      → 可见（已提交在事务开始前）
+   ③ R.trx_id >= max_trx_id     → 不可见（未来事务）
+   ④ R.trx_id ∈ m_ids          → 不可见（还活跃）
+   ⑤ R.trx_id ∉ m_ids          → 可见（已提交）
+
+4. 不可见 → 沿 R.DB_ROLL_PTR → 找 undo log 中前一个版本 R'
+            → 重新执行步骤 3 判断 R'
+
+5. 找到第一个可见的版本 → 返回给事务 T
+   全部都不可见 → 返回空（数据对当前事务不存在）
+```
+
+```mermaid
+flowchart LR
+    R1["当前 V3<br/>trx_id=30<br/>name=C"] --> U1["undo V2<br/>trx_id=20<br/>name=B"]
+    U1 --> U2["undo V1<br/>trx_id=10<br/>name=A"]
+    RV["Read View 判断"] --> R1
+    R1 -.不可见.-> U1
+    U1 -.不可见.-> U2
+    U2 -.可见 ✓ → 返回 'A'.-> Result[结果 A]
+```
+
+##### 4 条核心机制 - 逐点讲透
+
+###### 1. 隐藏字段（3 个）
+
+```
+DB_TRX_ID     6 字节   最近修改这行的事务 ID
+DB_ROLL_PTR   7 字节   指向 undo log 中前一个版本（构建链表）
+DB_ROW_ID     6 字节   只有无主键且无唯一索引时才有
+```
+
+###### 2. undo log 链
+
+```
+update / delete 时:
+  - 复制当前行到 undo log
+  - 修改原行，trx_id 改为当前事务
+  - DB_ROLL_PTR 指向 undo log 中的旧版本
+
+  → 形成 V_当前 → V_旧 → V_更旧 → ... → 最初版本 的链
+
+undo log 何时清理:
+  - 事务提交后不能立即删（其他事务的 Read View 可能还要用）
+  - purge 线程异步清理：当所有活跃 Read View 的 min_trx_id 都 > undo 的 trx_id 时才清
+  - 长事务会让 history list length 涨到几千万 → 排查必查
+```
+
+###### 3. Read View 快照
+
+```c
+typedef struct ReadView {
+    trx_id_t  m_low_limit_id;   // 下一个分配的事务 ID（max_trx_id）
+    trx_id_t  m_up_limit_id;    // 当前活跃事务最小 ID（min_trx_id）
+    trx_id_t  m_creator_trx_id; // 创建该 Read View 的事务 ID
+    ids_t     m_ids;            // 活跃事务 ID 列表
+} ReadView;
+```
+
+###### 4. 可见性判断（5 条规则）
+
+记忆口诀：**自己 / 过去 / 未来 / 活跃 / 已提交**
+
+```
+对每行的 trx_id:
+  是自己改的（== creator）         → 可见
+  在所有活跃事务之前（< min）       → 可见（已提交）
+  在 Read View 之后（>= max）       → 不可见（未来事务）
+  在活跃列表中（∈ m_ids）           → 不可见（还没提交）
+  不在活跃列表（< max 且 ∉ m_ids）  → 可见（已提交）
+```
+
+##### 一句话总结
+
+> MVCC 的核心是：**隐藏字段 trx_id + DB_ROLL_PTR 构建 undo 链 + Read View 快照 + 5 条可见性规则**，
+> 本质是**空间换并发**：让读不阻塞写、写不阻塞读。
+> RC 和 RR 的差异是 **Read View 创建时机**（每次 SELECT vs 事务首次 SELECT）。
+> 但 **MVCC 只解决快照读的幻读，当前读靠 Next-Key 锁**。
+
+---
+
+#### 3.1 实现细节（深入）
+
 MVCC 是多版本并发控制，目标是让读写尽量不互相阻塞。
 
 InnoDB MVCC 依赖：
@@ -41,15 +158,6 @@ InnoDB MVCC 依赖：
 - 隐藏字段：记录创建版本、删除版本等信息。
 - undo log：保存历史版本。
 - Read View：判断哪个版本对当前事务可见。
-
-```mermaid
-flowchart LR
-    R1["当前记录<br/>trx_id = 30<br/>name = C"] --> U1["undo 版本<br/>trx_id = 20<br/>name = B"]
-    U1 --> U2["undo 版本<br/>trx_id = 10<br/>name = A"]
-    RV["Read View<br/>判断版本可见性"] --> R1
-    RV --> U1
-    RV --> U2
-```
 
 读已提交和可重复读的重要区别：
 
