@@ -76,7 +76,9 @@
 - **实战案例**：真实生产故障 + STAR 复盘
 - **答题模板**：一句话 → 分层 → 边界 → 案例
 
-### 4.2 答题模板（四段式 STAR-L）
+### 4.2 答题模板 A：项目讲述（STAR-L 四段式）
+
+> 用于 14-projects、15-leadership 这种**讲故事 / 经历**的场景。
 
 ```
 S 背景    Situation    业务规模 / 团队 / 角色
@@ -86,7 +88,90 @@ R 结果    Result       多维量化（性能 + 成本 + 业务）
 L 反思    Learnings    取舍 / 失败 / 成长（区分资深关键）
 ```
 
-### 4.3 资深信号（写作时主动加入）
+样板：[14-projects/07-ecommerce-story.md](14-projects/07-ecommerce-story.md)
+
+---
+
+### 4.3 答题模板 B：深度知识点（5 段式 - 重要）
+
+> 用于讲**技术原理 / 中间件 / 协议 / 算法**的场景（如 Redis 锁 / Raft / Kafka ISR / B+ 树 / TCC）。
+>
+> **目标：让读者理解"为什么这样设计"而不只是"是什么"。**
+
+```
+1. 核心机制（N 条必背）       3-5 条编号列表，关键技术点
+                              例: "Lease 租约 + Revision 全局序号 + Prefix Watch + Raft 共识"
+
+2. 核心本质（必懂）            用高维视角解释"为什么这样设计"
+                              例: "Redis 主从异步复制 → CAP 牺牲 C → 锁丢失是必然"
+                              视角: CAP / 一致性模型 / 性能-一致取舍 / 时间空间复杂度
+
+3. 完整流程（面试必背）        Mermaid 时序图 + 编号 N 步流程
+                              从开始到结束讲清，含异常路径
+
+4. N 条机制 - 逐点讲透         对每条机制详细解释:
+                              - 机制是什么
+                              - 解决什么问题
+                              - 怎么实现
+                              - 对比其他方案
+
+5. 一句话总结                 一段话浓缩全章 + 适用边界
+                              例: "etcd 锁基于 Raft + Lease + Revision + Watch，
+                                   解决了 Redis 主从丢锁问题，适合金融场景"
+```
+
+**为什么这样设计**：
+
+| 段位 | 解决的问题 |
+| --- | --- |
+| 核心机制（N 条必背） | 让人**记得住** |
+| 核心本质 | 让人**理解为什么** |
+| 完整流程 | 让人**讲得出**（面试场景）|
+| 逐点讲透 | 让人**经得起追问** |
+| 一句话总结 | 让人**复习快** |
+
+**样板文件**：
+
+| 主题 | 文件 |
+| --- | --- |
+| 三方分布式锁 | [06-distributed/04-lock.md](06-distributed/04-lock.md) **第四 / 五 / 六章** |
+| Redis 集群 | [04-redis/04-replication-cluster.md](04-redis/04-replication-cluster.md) |
+| InnoDB | [03-mysql/22-innodb-internals.md](03-mysql/22-innodb-internals.md) |
+
+---
+
+### 4.4 答题模板 C：综合追问（一句话 → 分层 → 边界 → 案例）
+
+> 用于 99-meta/*-20.md 速记题集 / 资深答题模板（`*-senior-answers.md`）。
+
+```
+一句话:    最精炼的核心结论（< 30 字）
+分层展开:  2-5 个维度 / 层次（表格或编号）
+边界 / 代价: 什么时候不行 / 失效条件 / 性能损失
+实战 / 案例: 真实生产例子 + 量化数据
+[资深加分]: 进一步深入（演进 / 反思 / 业界做法）
+```
+
+样板：[04-redis/21-senior-interview-answers.md](04-redis/21-senior-interview-answers.md)
+
+---
+
+### 4.5 三种模板对比
+
+| 模板 | 适用场景 | 核心价值 | 样板 |
+| --- | --- | --- | --- |
+| **A. STAR-L** | 项目 / 经历 / 行为题 | 真实感 + 反思 | 14-projects |
+| **B. 5 段式** | 技术原理 / 中间件 / 协议 | **核心本质** + 完整流程 | 06-distributed/04-lock |
+| **C. 四段式** | 综合追问 / 速记 | 精简 + 兜底 | 04-redis/21-senior-answers |
+
+**写新文件时按"主要用途"选模板**：
+- 写"X 是什么 / 怎么实现"→ B（5 段式）
+- 写"我做了 X 项目"→ A（STAR-L）
+- 写"高频问 X 怎么答"→ C（四段式）
+
+---
+
+### 4.6 资深信号（写作时主动加入）
 
 - ✓ 主动讲取舍（不是只讲选定方案）
 - ✓ 主动讲代价（性能 vs 成本 / 一致 vs 可用）
@@ -94,8 +179,9 @@ L 反思    Learnings    取舍 / 失败 / 成长（区分资深关键）
 - ✓ 主动讲失败（踩过的坑 + 反思）
 - ✓ 主动讲演进（X 版本前 / 后变化）
 - ✓ 量化数据（不模糊"挺大的"）
+- ✓ **主动讲核心本质**（用 CAP / 共识协议 / 复杂度视角）← 新
 
-### 4.4 视觉规范
+### 4.7 视觉规范
 
 - **Mermaid** 图用于流程 / 时序 / 架构 / mindmap
 - **表格**用于对比 / 选型
@@ -226,16 +312,18 @@ git stash pop                     # 恢复本地 obsidian 状态
 
 如果 Claude 不确定某个写作风格，参考以下"金标准"文件：
 
-| 类别 | 参考文件 |
-| --- | --- |
-| 总览地图 | `04-redis/00-redis-map.md` |
-| 答题模板 | `04-redis/21-senior-interview-answers.md` |
-| Go 实战 | `04-redis/20-go-redis-best-practices.md` |
-| 设计边界 | `04-redis/19-redis-design-tradeoffs.md` |
-| 源码深水区 | `04-redis/17-object-encoding-internals.md` |
-| 反模式 | `03-mysql/23-antipatterns-dangerous-ops.md` |
-| 项目故事 | `14-projects/07-ecommerce-story.md` |
-| Leadership | `15-leadership/04-senior-answers.md` |
+| 类别 | 参考文件 | 用法 |
+| --- | --- | --- |
+| 总览地图 | `04-redis/00-redis-map.md` | 知识树 + 题型分级 + 学习路径 |
+| **深度知识点（5 段式）** | **`06-distributed/04-lock.md` 第 4-6 章** | **核心机制 + 核心本质 + 完整流程 + 一句话总结** ⭐ |
+| 综合答题（四段式）| `04-redis/21-senior-interview-answers.md` | 一句话 + 分层 + 边界 + 案例 |
+| Go SDK 实战 | `04-redis/20-go-redis-best-practices.md` | 连接池 + 封装 + 反模式 |
+| 设计边界 | `04-redis/19-redis-design-tradeoffs.md` | 适合 / 不适合 + 选型决策树 |
+| 源码深水区 | `04-redis/17-object-encoding-internals.md` | 数据结构 + 编码 |
+| 反模式 | `03-mysql/23-antipatterns-dangerous-ops.md` | P0/P1/P2 分级 |
+| 项目故事（STAR-L）| `14-projects/07-ecommerce-story.md` | 完整项目讲述 |
+| Leadership | `15-leadership/04-senior-answers.md` | 60 道题答题模板 |
+| 文章精读笔记 | `17-learning-log/article-notes/2026-05-10-xiaomi-distributed-transaction.md` | 自考 + 标准答案 |
 
 新文件以这些为模板，能减少风格漂移。
 
