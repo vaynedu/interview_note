@@ -84,6 +84,141 @@ Basic Paxos 一次只能决定**一个值**。Multi-Paxos = 选出固定 Leader 
 
 ## 三、Raft（生产首选）
 
+### 3.0 核心提炼（5 段式）
+
+#### 核心机制（4 条必背）
+
+1. **Leader 唯一**：所有写请求只走 Leader，Leader 串行化所有操作（避免冲突）
+2. **任期 Term + 选举超时**：每个任期最多一个 Leader，Follower 超时未收到心跳就发起选举
+3. **多数派提交（Quorum）**：日志被复制到 N/2+1 节点才算 committed，保证不丢
+4. **状态机一致性**：所有节点按相同顺序 apply 已 committed 的日志 → 数据最终一致
+
+#### 核心本质（必懂）
+
+> Raft 的本质是**用 Leader 串行化 + 多数派同步换强一致性**：
+>
+> - **为什么有 Leader**：解决 Paxos 多角色协调难的问题，简化为"Leader 决策 + Followers 跟随"
+> - **为什么多数派**：N 个节点容忍 (N-1)/2 个故障（5 节点容忍 2 个挂）
+> - **为什么会丢可用性**：网络分区时少数派无 Leader → 拒绝写 → CAP 选 CP
+>
+> **核心保证**：
+> - **安全性**：已 committed 的日志永不丢失（即使 Leader 切换）
+> - **活性**：只要多数派存活，集群最终能选出 Leader 并继续工作
+>
+> **代价**：性能 ~1-2 万 QPS（受 Leader 单点 + 网络往返限制），不适合极高 QPS。
+
+#### 完整流程（面试必背）
+
+```
+1. 选举（Election）:
+   - 集群启动 / Leader 失联 → Follower 等 election timeout（150-300ms 随机）
+   - 超时未收到心跳 → 自己变 Candidate，term++，给自己投票
+   - 向其他节点发 RequestVote RPC
+   - 收到多数派投票 → 变 Leader → 发心跳广播
+   - 任期内多个 Candidate → 票数分裂 → 重新 timeout 重选
+
+2. 日志复制（Log Replication）:
+   - Client → Leader 写请求
+   - Leader 追加日志（uncommitted）
+   - Leader 并行发 AppendEntries RPC 给所有 Followers
+   - Followers 写本地日志后回复
+   - 多数派回复成功 → Leader 标记日志为 committed
+   - Leader apply 到状态机 → 返回 Client 成功
+   - 后续心跳告知 Followers 该日志已 committed → Followers apply
+
+3. 安全性保证:
+   - 选举限制: 只有日志最新的 Candidate 才能当选（防数据丢失）
+   - 提交规则: Leader 只能提交当前任期的日志（防覆盖已提交）
+   - 日志匹配: 相同 index + term 的日志 = 内容相同，且之前所有日志也相同
+
+4. 异常路径:
+   - Leader 挂 → 选新 Leader（election timeout 内完成）
+   - Follower 挂 → Leader 重试 AppendEntries 直到节点恢复
+   - 网络分区 → 少数派无 Leader 不可用，多数派正常工作
+   - 脑裂 → 老 Leader 在少数派侧无法获得多数派 ack → 写挂起 → 新 Leader 选出后老 Leader 收到更高 term → 自动降级
+```
+
+#### 4 条核心机制 - 逐点讲透
+
+##### 1. Leader 唯一（强 Leader 模型）
+
+```
+为什么强 Leader:
+  Paxos 多角色（Proposer/Acceptor/Learner）协调复杂
+  Raft 简化: 只有 Leader 提议，Followers 接受
+
+  好处:
+  - 所有写串行化 → 简单可推理
+  - 状态机日志严格有序
+  - 实现门槛低（vs Paxos）
+
+代价:
+  Leader 单点性能瓶颈（写吞吐受限）
+  Leader 挂 → election timeout 内不可用（毫秒级）
+```
+
+##### 2. 任期 + 选举超时（避免脑裂）
+
+```
+Term 单调递增:
+  每次选举 term++
+  消息带 term，老 term 自动降级为 Follower
+
+选举超时随机化（150-300ms）:
+  避免多个 Follower 同时变 Candidate 导致票数分裂
+
+心跳间隔 << 选举超时:
+  Leader 心跳 50ms，超时 150-300ms
+  保证正常情况下 Leader 不被误判
+```
+
+##### 3. 多数派提交（Quorum）
+
+```
+为什么是多数派 (N/2+1):
+  - 任意两个多数派必有交集（鸽巢原理）
+  - 即使 (N-1)/2 个节点挂，仍能形成多数派
+  - 防止"两个 Leader 都能写"的脑裂
+
+容错能力:
+  3 节点: 容忍 1 挂
+  5 节点: 容忍 2 挂
+  7 节点: 容忍 3 挂
+  → 节点越多容错越好但性能越差
+
+为什么不是全部:
+  全部同步 = 任一节点挂全集群不可用
+  → 失去"高可用"意义
+```
+
+##### 4. 状态机一致性
+
+```
+日志 vs 状态机:
+  日志: 操作序列（append + commit）
+  状态机: 应用日志后的实际数据
+
+保证:
+  - 所有节点按相同顺序 apply 已 committed 的日志
+  - 同样的初始状态 + 同样的日志序列 → 同样的最终状态
+  - 即使节点重启，重放日志即可恢复
+
+应用:
+  - etcd: Raft 日志 → KV 状态机
+  - TiKV: Raft 日志 → RocksDB 状态机
+  - Kafka KRaft: Raft 日志 → 元数据状态机
+```
+
+#### 一句话总结
+
+> Raft 共识的核心是：**Leader 唯一 + 任期 Term + 多数派提交 + 状态机一致性**，
+> 本质是**用 Leader 串行化简化 Paxos**，用多数派同步换强一致（CP）。
+> 安全性（已提交不丢）通过"选举限制 + 提交规则"保证；
+> 活性（最终能选出 Leader）通过"超时随机化 + 任期递增"保证。
+> 适合**强一致 + 中等 QPS**场景（etcd / TiKV / Kafka KRaft），极高 QPS 用 AP 系统（Cassandra）。
+
+---
+
 ### 3.1 设计哲学：可理解性
 
 > "Raft 是为了可理解而设计的 Paxos"
