@@ -2,6 +2,279 @@
 
 > MySQL 是核心 OLTP 存储，但不是所有数据问题都该塞进 MySQL。面试里能讲清“边界”和“选型”，比只会分库分表更有架构感。
 
+## 〇、多概念对比：6 大数据库选型（D 模板）
+
+### 一句话定位
+
+| 数据库 | 一句话定位 |
+| --- | --- |
+| **MySQL** | **OLTP 王者**（行存 + B+ 树 + InnoDB），互联网核心存储，**生态最广**，单机 TB 级 |
+| **PostgreSQL** | **功能最强的开源关系库**（更强 SQL + JSON + GIS + 物化视图），**金融 / 政府首选** |
+| **TiDB** | **分布式 NewSQL**（MySQL 协议 + Raft + TiKV），**水平扩展强一致** |
+| **MongoDB** | **文档数据库**（BSON / 灵活 schema），**JSON 半结构化数据**首选，弱事务（4.0+ 多文档事务）|
+| **ClickHouse** | **列存 OLAP**（MergeTree + 向量化），**亿级数据秒级聚合**，互联网分析标配 |
+| **Elasticsearch** | **倒排索引搜索引擎**（Lucene），**全文搜索 + 日志分析 + 多条件检索** |
+
+### 多维度对比（18 维度，必背）
+
+| 维度 | MySQL | PostgreSQL | TiDB | MongoDB | ClickHouse | Elasticsearch |
+| --- | --- | --- | --- | --- | --- | --- |
+| **类型** | 关系型 OLTP | 关系型 OLTP | 分布式 NewSQL | 文档型 NoSQL | 列存 OLAP | 搜索引擎 |
+| **存储引擎** | InnoDB（B+ 树）| Heap + B-tree | TiKV（**LSM Tree**）| WiredTiger（B 树）| **MergeTree（列存）** | Lucene（倒排索引）|
+| **数据模型** | 行存 + 关系 | 行存 + 关系 + JSONB | 行存 + 关系 | 文档（BSON）| **列存** | 倒排索引文档 |
+| **协议** | MySQL | PostgreSQL | **MySQL 兼容** | MongoDB wire | HTTP / TCP | HTTP REST |
+| **SQL 支持** | ✅ 标准 | ✅ **更强**（窗口函数 / CTE / 物化视图 / 数组）| ✅ 兼容 MySQL | 弱（聚合管道）| ✅ SQL 子集 | ❌（DSL）|
+| **事务** | ✅ ACID | ✅ ACID + **更严** | ✅ 分布式 ACID（Percolator）| 4.0+ 多文档 | 弱（最终一致）| ❌ |
+| **MVCC** | undo log 链 | **多版本元组**（VACUUM 清理）| MVCC + Raft | 文档级 | - | - |
+| **水平扩展** | 分库分表（中间件）| 分库分表 | ✅ **原生**（Raft）| ✅ Sharding | ✅ 分布式 MergeTree | ✅ Shard |
+| **单机性能（写）** | 5w QPS | 3w QPS | 1-2w QPS（分布式开销）| 5-10w QPS | 100w 行/s（批写）| 1w docs/s |
+| **单机性能（读）** | 10w QPS（点查）| 5-10w QPS | 5w QPS | 10w QPS | **亿级行秒级聚合** | 1w QPS |
+| **单机容量** | TB 级（推荐 < 5TB）| TB 级 | **PB 级**（分布式）| TB 级 | PB 级 | TB-PB 级 |
+| **典型延迟（点查 P99）** | 1-5 ms | 1-5 ms | 5-20 ms | 1-5 ms | N/A（聚合）| 10-50 ms |
+| **典型场景** | 电商 / 订单 / 用户 | 金融 / 政府 / 复杂查询 | 大规模 OLTP / 弹性 | 内容管理 / IoT / 实时数据 | 日志分析 / BI / 用户行为 | 日志检索 / 全文搜索 |
+| **运维复杂度** | 低（主从）| 低（VACUUM 需调）| 高（多组件 PD/TiKV/TiDB）| 中 | 中（数据建模重要）| 高（集群规划）|
+| **国内活跃度** | 极高 | 中（金融）| 高（增长快）| 中 | 极高 | 极高 |
+| **代表用户** | 大部分互联网 | 苹果 / Yandex / 银行 | 美团 / 小米 / 知乎 | 头条 / 滴滴（部分）| 字节 / 阿里 / 腾讯 | ELK 用户 |
+| **开源协议** | GPL v2 | PostgreSQL（BSD-like）| Apache 2.0 | SSPL（不友好）| Apache 2.0 | Elastic License v2（不再 Apache）|
+
+### 协作时序对比（同一业务在不同存储的查询路径）
+
+```mermaid
+sequenceDiagram
+    participant App as 应用
+    participant My as MySQL
+    participant CH as ClickHouse
+    participant ES as ES
+    participant TiDB as TiDB
+
+    Note over App,TiDB: 点查（按订单号查）
+    App->>My: SELECT * WHERE order_id=123<br/>1-5ms（B+ 树）
+    App->>CH: SELECT * WHERE order_id=123<br/>~50ms（列存不擅长点查）
+    App->>ES: GET /orders/_doc/123<br/>10-50ms
+    App->>TiDB: SELECT * WHERE order_id=123<br/>5-20ms（分布式开销）
+
+    Note over App,TiDB: 聚合（昨日订单总数 + GROUP BY）
+    App->>My: SELECT COUNT(*), city GROUP BY city<br/>10-100s（行存全表扫）
+    App->>CH: 同 SQL<br/>~1s（列存 + 向量化）
+    App->>ES: 聚合 DSL<br/>2-10s
+    App->>TiDB: 同 SQL<br/>10-30s（TiKV 行存）
+
+    Note over App,TiDB: 全文搜索（"宝马 SUV"）
+    App->>My: WHERE title LIKE '%宝马%'<br/>不可用（全表扫）
+    App->>ES: { "match": {"title": "宝马 SUV"} }<br/>50-200ms（倒排索引）
+```
+
+### 存储引擎深度对比
+
+```
+MySQL InnoDB（行存 + B+ 树）:
+  ┌───────────────────────┐
+  │ Buffer Pool（内存）    │
+  │  ├ Free List          │
+  │  ├ LRU                │
+  │  └ Flush List         │
+  └───────────────────────┘
+            ↓
+  ┌───────────────────────┐
+  │ 表空间（磁盘）         │
+  │  ├ 聚簇索引（数据）    │
+  │  ├ 二级索引            │
+  │  └ undo / redo log    │
+  └───────────────────────┘
+  特点: 点查 / 范围 / 事务 OLTP 强
+
+ClickHouse MergeTree（列存 + LSM 思想）:
+  ┌─────────────────────────┐
+  │ Part（数据分片，按时间）│
+  │  ├ 列文件 col1.bin       │
+  │  ├ 列文件 col2.bin       │  ← 各列独立存储
+  │  ├ 列文件 col3.bin       │
+  │  ├ 主键索引 primary.idx  │  ← 稀疏索引
+  │  └ 标记文件              │
+  └─────────────────────────┘
+  后台 Merge: 合并 Parts 提升查询性能
+
+  特点: 
+    - 列存 + 压缩（10:1 - 100:1）
+    - 向量化执行（SIMD）
+    - 不擅长点查 / 更新（只追加 + 批量 Merge）
+
+TiDB TiKV（分布式 LSM Tree）:
+  ┌──────────────────────────┐
+  │ TiDB（SQL 层，无状态）    │
+  └──────────────────────────┘
+            ↓
+  ┌──────────────────────────┐
+  │ PD（元数据 + 调度）       │
+  └──────────────────────────┘
+            ↓
+  ┌──────────────────────────┐
+  │ TiKV（KV 存储，Raft 副本）│
+  │  ├ Region 1（k1-k1000）   │
+  │  ├ Region 2（k1001-k2000）│
+  │  └ ...                    │
+  └──────────────────────────┘
+  特点:
+    - 水平扩展 + 强一致
+    - 分布式事务（Percolator）
+    - 写性能受 Raft 限制
+
+Elasticsearch（倒排索引）:
+  原文档:
+    Doc 1: "宝马 SUV X5"
+    Doc 2: "宝马 3 系"
+    Doc 3: "奔驰 SUV"
+  
+  倒排索引:
+    "宝马" → [Doc1, Doc2]
+    "SUV"  → [Doc1, Doc3]
+    "X5"   → [Doc1]
+  
+  查询 "宝马 SUV": 取交集 → Doc1
+  特点: 搜索极快 / 不擅长事务和更新
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 MySQL** | OLTP 互联网核心存储失去事实标准 |
+| **没 PostgreSQL** | 复杂 SQL / 金融 / GIS 场景失去最强开源方案 |
+| **没 TiDB** | 大规模 OLTP（PB 级）失去 MySQL 兼容的水平扩展方案 |
+| **没 MongoDB** | 半结构化数据（schema 灵活）失去原生方案 |
+| **没 ClickHouse** | 海量数据 OLAP 分析（用户行为 / 日志）退化到 SQL on Hadoop（慢且复杂）|
+| **没 ES** | 全文搜索 / 日志检索退化为 SQL LIKE（性能崩盘）|
+
+### MySQL vs PostgreSQL 深度对比（高频考点）
+
+```
+MySQL 优势:
+  - 主从复制简单
+  - InnoDB 性能稳定
+  - 互联网生态最完善（Canal / DTS / Navicat）
+  - 学习曲线低
+
+PostgreSQL 优势:
+  - SQL 标准支持更全（窗口函数 / CTE 递归 / 物化视图）
+  - 类型更丰富（数组 / JSONB / GIS / UUID 原生）
+  - MVCC 实现更优（不用 undo log，独立元组版本）
+  - 扩展能力强（FDW / 自定义类型 / 索引）
+  - DDL 事务支持（ALTER TABLE 可回滚！）
+  - 复杂查询优化器更强
+
+国内现状:
+  - 互联网公司 90% MySQL
+  - 银行 / 政府 50%+ PostgreSQL
+  - 新项目趋势: PostgreSQL（功能更强 + License 友好）
+```
+
+### 行存 vs 列存深度对比
+
+```
+行存（MySQL / PG）:
+  存储: [row1: id1,name1,age1] [row2: id2,name2,age2] ...
+  
+  适合: 
+    SELECT * WHERE id=1   ← 整行取出快
+    INSERT / UPDATE       ← 整行写入
+  
+  不适合:
+    SELECT AVG(age) FROM table  ← 要读全部列（包括不需要的）
+
+列存（ClickHouse）:
+  存储: 
+    id 列文件:   [id1, id2, id3, ...]
+    name 列文件: [name1, name2, name3, ...]
+    age 列文件:  [age1, age2, age3, ...]
+  
+  适合:
+    SELECT AVG(age)         ← 只读 age 列文件，IO 极少
+    GROUP BY city           ← 列存压缩 + 向量化
+    分析 / 聚合 / BI
+  
+  不适合:
+    SELECT * WHERE id=1     ← 要从多个列文件取数据再拼
+    UPDATE / DELETE 单行    ← 多个列文件同步改
+
+性能差距:
+  100 亿行 SELECT AVG(age):
+    MySQL: 不可行（OOM 或 1 小时+）
+    ClickHouse: 5-30 秒
+
+  100 亿行 INSERT 单行:
+    MySQL: 1ms
+    ClickHouse: 不推荐（应批量写）
+
+业内做法:
+  OLTP（在线交易）→ MySQL / PG
+  OLAP（分析）   → ClickHouse
+  数据同步: Canal/Debezium → Kafka → ClickHouse
+```
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{业务类型?}
+
+    Q1 -->|OLTP 在线交易| Q2
+    Q1 -->|OLAP 分析| Q3
+    Q1 -->|搜索 / 全文检索| ES
+    Q1 -->|半结构化 / 灵活 schema| Mongo[MongoDB]
+    Q1 -->|时序数据| TS[InfluxDB / TDengine]
+    Q1 -->|图数据| Graph[Neo4j / Nebula]
+
+    Q2{数据规模 + 功能需求?}
+    Q2 -->|TB 级 + 简单| My[MySQL]
+    Q2 -->|TB 级 + 复杂 SQL / GIS| PG[PostgreSQL]
+    Q2 -->|PB 级 + 水平扩展| Ti[TiDB]
+
+    Q3{规模?}
+    Q3 -->|亿级 + 互联网| CH[ClickHouse]
+    Q3 -->|PB 级 + 离线| Hadoop[Hive / Spark / Presto]
+
+    style My fill:#9f9
+    style CH fill:#9ff
+    style Ti fill:#ff9
+```
+
+**实战推荐表**：
+
+| 业务 | 推荐 | 备注 |
+| --- | --- | --- |
+| 电商 / 订单 / 用户中心 | **MySQL** | OLTP 标配 |
+| 金融账户 / 银行 | **PostgreSQL** | ACID 严格 + 复杂报表 |
+| 大规模交易（如美团）| **TiDB / OceanBase** | 水平扩展 |
+| 内容管理 / IoT 数据 | **MongoDB** | 文档模型 |
+| 用户行为分析 / 漏斗 | **ClickHouse** | 亿级聚合 |
+| 全文搜索 / 日志检索 | **Elasticsearch** | 倒排索引 |
+| 监控指标 / 时序 | **InfluxDB / Prometheus** | 时序专用 |
+| 配置中心 | **etcd / Nacos** | 强一致 KV |
+| 缓存 | **Redis** | 不算"数据库" |
+| 图数据（社交关系）| **Neo4j / Nebula Graph** | 图遍历 |
+
+### 反模式
+
+```
+❌ 把日志写 MySQL → 性能崩盘（应用 ClickHouse / ES）
+❌ 把搜索写 MySQL LIKE '%xxx%' → 全表扫（应用 ES）
+❌ 把分析跑在主库 → 影响 OLTP 性能（应抽到 ClickHouse / 从库）
+❌ MongoDB 当事务库用 → 4.0 之前没多文档事务
+❌ ClickHouse 当 OLTP 用 → 不擅长点查 + 不支持更新
+❌ TiDB 部署 < 3 节点 → 失去高可用意义
+❌ 所有数据塞一个库 → 该拆 OLAP / 搜索 / 缓存 / 主库
+```
+
+### 一句话总结（D 模板专属）
+
+> 6 大数据库选型核心是 **"按业务类型分层 + 各司其职"**：
+> **OLTP**（MySQL / PG / TiDB）+ **OLAP**（ClickHouse）+ **搜索**（ES）+ **文档**（MongoDB）+ **缓存**（Redis）。
+> **缺一不可**：MySQL 替代不了 ClickHouse 的亿级聚合 / ES 替代不了 MySQL 的事务 / TiDB 替代不了 ClickHouse 的列存。
+> **业内现状**：互联网公司常用 **MySQL（OLTP）+ ClickHouse（OLAP）+ ES（搜索）+ Redis（缓存）四件套**。
+> **关键事实**：行存 vs 列存差距极大（亿级聚合 1 小时 vs 5 秒）；TiDB 兼容 MySQL 协议但不是"性能更好的 MySQL"（点查反而更慢）。
+
+---
+
 ## 一、核心判断
 
 先按问题类型选存储：
