@@ -154,6 +154,192 @@ fork() 系统调用:
 
 ---
 
+## 〇.5 多概念对比：RDB vs AOF vs 混合（D 模板）
+
+### 一句话定位
+
+| 方案 | 一句话定位 |
+| --- | --- |
+| **RDB（快照）** | **某时刻全量数据的二进制快照**，紧凑、恢复快，但**两次快照之间数据可能丢** |
+| **AOF（日志）** | **每条写命令追加到文件**，细粒度、安全性高，但**文件大、恢复慢** |
+| **混合（RDB+AOF）** | **RDB 全量 + 增量 AOF 命令**，融合两者优点，是 **4.0+ 推荐方案** |
+
+### 多维度对比（15 维度，必背）
+
+| 维度 | RDB | AOF | 混合 |
+| --- | --- | --- | --- |
+| **数据形式** | 二进制快照（内存 dump）| 命令日志（追加写）| 前半 RDB + 后半 AOF |
+| **触发时机** | save 配置 / BGSAVE / SHUTDOWN | 每条写命令 | AOF rewrite 时 |
+| **写入方式** | fork 子进程 + 全量遍历内存 | append 到 aof_buf → fsync | rewrite 时 fork + 增量 append |
+| **文件大小** | 小（LZF 压缩，5-10x 小于 AOF）| 大（每条命令明文）| 中（RDB 紧凑 + 少量增量）|
+| **恢复速度** | **快**（直接 mmap 加载）| 慢（重放百万命令）| **快**（前半 RDB） |
+| **数据安全性** | 低（两次快照间丢）| 高（everysec 最多丢 1s）| 高（与 AOF 相同）|
+| **fsync 策略** | 不涉及（一次性写完文件）| always / everysec / no | rewrite 完成时 + 后续 AOF 同 AOF |
+| **fork 阻塞** | 触发时 fork（大内存卡顿）| 仅 rewrite 时 fork | 仅 rewrite 时 fork |
+| **CPU 占用** | 子进程压缩 → CPU 短峰 | 持续写盘 → CPU 平稳 | 同 AOF |
+| **磁盘 IO 模式** | 短时大量顺序写 | 持续顺序写 + fsync | rewrite 大写 + 持续小写 |
+| **主从同步用途** | **全量同步用 RDB**（PSYNC 全量）| 不用于主从 | 全量同步仍用 RDB |
+| **加载兼容性** | 高（跨版本好）| 高 | **低**（老版 Redis 不识别）|
+| **适用版本** | 所有 | 1.0+ | 4.0+ |
+| **典型场景** | 备份 / 灾备 / 主从全量同步 | 安全要求高的业务 | **生产首选**（4.0+）|
+| **配置参数** | `save 3600 1` | `appendonly yes` + `appendfsync everysec` | `aof-use-rdb-preamble yes`（默认）|
+
+### 协作时序图（生产典型配置）
+
+```mermaid
+sequenceDiagram
+    participant App as 客户端
+    participant Main as Redis 主线程
+    participant Buf as aof_buf
+    participant Disk as 磁盘
+    participant Child as 子进程
+
+    Note over App,Disk: 持续阶段（AOF 持续写）
+    App->>Main: SET k v
+    Main->>Main: 改内存
+    Main->>Buf: append 命令
+    Buf-->>Disk: fsync（everysec）
+
+    Note over Main,Child: AOF 文件大到阈值，触发 rewrite
+    Main->>Main: fork() 子进程
+    Main->>Buf: 后续命令同时写 aof_buf + aof_rewrite_buf
+    Child->>Child: 遍历内存生成 RDB 部分
+    Child->>Disk: 写新 AOF 文件（前半 RDB 二进制）
+    Main->>Disk: 子进程通知"完成"
+    Main->>Disk: 把 aof_rewrite_buf 追加到新文件（后半 AOF 命令）
+    Disk->>Disk: rename 替换旧 AOF
+
+    Note over Main: rewrite 完成 → 持续写新 AOF
+```
+
+### 职责分层（数据流视角）
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Redis 主进程                         │
+│  ┌───────────────────────────────────────────────┐  │
+│  │           内存数据库（dict + skiplist）         │  │
+│  │                       │                        │  │
+│  │       写命令          │                        │  │
+│  │           ↓                                    │  │
+│  │      ┌────────┐                                │  │
+│  │      │ aof_buf │ ───────────► fsync ────► AOF 文件│
+│  │      └────────┘                                │  │
+│  └──────────┼────────────────────────────────────┘  │
+│             │ fork                                  │
+│  ┌──────────▼────────────────────────────────────┐  │
+│  │    子进程（BGSAVE / AOF Rewrite）              │  │
+│  │    遍历父进程内存（COW 共享页）                  │  │
+│  │           ↓                                    │  │
+│  │     生成 RDB / 重写 AOF                         │  │
+│  └────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+
+关键设计:
+  - 主进程不阻塞业务（fork 子进程异步写盘）
+  - 写时复制（COW）让父子进程共享内存
+  - 主进程继续接请求 → 修改的页 OS 自动复制
+```
+
+### 缺一不可分析（每个角色为什么必须有）
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 RDB** | 全量备份 / 主从同步失去高效手段，AOF 文件极大（重放慢 + 体积大）|
+| **没 AOF** | 数据安全性差（依赖快照间隔，最多丢分钟级数据）|
+| **没混合** | 用户必须二选一（RDB 安全性差 / AOF 恢复慢），无法兼得 |
+| **没 fork + COW** | 主线程被阻塞 → 业务卡几秒到几分钟（大内存场景）|
+| **没 fsync 策略** | 数据完全在 OS PageCache → 宕机丢秒级到分钟级 |
+
+### fsync 策略深度对比（AOF 三种）
+
+| 策略 | TPS 损失 | 最坏丢失 | 适用场景 |
+| --- | --- | --- | --- |
+| **always**（每条 fsync）| 80%+ | 0（理论上）| 金融 / 极严苛 |
+| **everysec**（每秒 fsync，默认）| 5-10% | 1 秒 | **主流** |
+| **no**（OS 决定）| 0 | 30s+ | 缓存场景（可重建）|
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{Redis 版本?}
+    Q1 -->|< 4.0| LegacyChoice
+    Q1 -->|>= 4.0| Q2
+
+    LegacyChoice{数据重要?}
+    LegacyChoice -->|是| AOF1[AOF + appendfsync everysec]
+    LegacyChoice -->|纯缓存| RDB1[只 RDB, save 3600 1]
+
+    Q2{数据重要?}
+    Q2 -->|是| Mixed["混合持久化（推荐）<br/>aof-use-rdb-preamble yes<br/>appendfsync everysec"]
+    Q2 -->|纯缓存可重建| RDB2["只 RDB<br/>save 配置宽松一点"]
+
+    style Mixed fill:#9f9
+```
+
+**生产推荐配置（Redis 4.0+）**：
+
+```conf
+# 混合持久化（默认开启）
+aof-use-rdb-preamble yes
+
+# AOF
+appendonly yes
+appendfsync everysec
+auto-aof-rewrite-percentage 100   # AOF 大小翻倍触发 rewrite
+auto-aof-rewrite-min-size 64mb
+
+# RDB（保留，主从全量同步要用）
+save 3600 1                       # 1 小时 1 次写 → 触发
+save 300 100                      # 5 分钟 100 次写
+save 60 10000                     # 1 分钟 1w 次写
+```
+
+**反模式（生产不要用）**：
+
+```
+❌ appendfsync always: TPS 损失太大（80%+）
+❌ 只 RDB + save 配置稀疏: 数据丢失风险大
+❌ 只 AOF + 没 rewrite: AOF 文件无限增长
+❌ no-appendfsync-on-rewrite=yes: rewrite 时不 fsync → 极端可能丢更多
+❌ 大内存 + 频繁 save: fork 抖动严重
+```
+
+### 实战指标（必看）
+
+```bash
+# RDB
+redis-cli INFO persistence | grep rdb_
+  rdb_changes_since_last_save: 距上次 save 后写命令数
+  rdb_bgsave_in_progress: 0/1（是否正在 BGSAVE）
+  rdb_last_bgsave_time_sec: 上次 BGSAVE 耗时
+  rdb_last_bgsave_status: ok/err
+
+# AOF
+redis-cli INFO persistence | grep aof_
+  aof_enabled: 1
+  aof_rewrite_in_progress: 0/1
+  aof_last_rewrite_time_sec: 上次 rewrite 耗时
+  aof_current_size: 当前 AOF 大小
+
+# fork 监控（关键）
+redis-cli INFO stats | grep latest_fork_usec
+  latest_fork_usec: 最近一次 fork 耗时（微秒）
+  > 1_000_000（1 秒）→ 业务可感知卡顿
+  → 调整 save 策略 / 减小实例
+```
+
+### 一句话总结（D 模板专属）
+
+> RDB / AOF / 混合的核心是 **"性能 vs 数据安全"的三档取舍**：
+> RDB 快但丢分钟级 / AOF 安全但文件大恢复慢 / 混合（4.0+）融合两者，是**生产首选**。
+> **fork + COW** 让持久化不阻塞主线程，**fsync 策略**决定数据丢失窗口（**everysec 是 95% 业务的最佳点**）。
+> **缺一不可**：没 RDB → 主从同步效率差；没 AOF → 数据安全差；没 COW → 业务卡顿。
+> **金融场景**仍建议主从 + 跨地域备份（持久化只是单机保障）。
+
+---
+
 ## 一、为什么需要持久化
 
 Redis 是内存数据库。**进程退出 → 数据全丢**。

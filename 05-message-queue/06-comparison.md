@@ -2,6 +2,177 @@
 
 > Kafka / RocketMQ / RabbitMQ / Pulsar / NSQ / Redis Stream 横向对比 + 场景选型
 
+## 〇、多概念对比：4 大主流 MQ（D 模板）
+
+### 一句话定位
+
+| MQ | 一句话定位 |
+| --- | --- |
+| **Kafka** | **大数据流处理**首选，顺序写 + 零拷贝 + 分区并行，单机 100w+ QPS，**业务消息能力弱** |
+| **RocketMQ** | **业务消息**首选，**事务消息 + 延迟消息 + 顺序消息**原生支持，阿里出品 |
+| **RabbitMQ** | **复杂路由**首选，AMQP 协议 + Exchange + Binding，老牌可靠，**吞吐中等（万级）** |
+| **Pulsar** | **多租户 + 跨地域**首选，计算存储分离（Broker + BookKeeper），**新秀**，运维复杂 |
+
+### 多维度对比（17 维度，必背）
+
+| 维度 | Kafka | RocketMQ | RabbitMQ | Pulsar |
+| --- | --- | --- | --- | --- |
+| **出品方** | LinkedIn → Apache | 阿里 → Apache | Pivotal（VMware）| StreamNative → Apache |
+| **协议** | 自定义二进制 | 自定义 | **AMQP 0.9.1**（标准）| 自定义二进制 |
+| **架构** | Broker 集群（KRaft / ZK）| NameServer + Broker | Broker（Erlang）| Broker + BookKeeper（计算存储分离）|
+| **单机吞吐** | **100w+ QPS / 600MB+** | 10w QPS | 万级 QPS | 80w+ QPS |
+| **延迟** | ms 级 | ms 级 | **μs 级（最低）** | ms 级 |
+| **顺序保证** | 分区级 | 分区级 + Sharding Key | 队列级 | 分区级 |
+| **事务消息** | 跨分区事务（EOS）| ✅ **原生 Half + 回查** | 弱（AMQP tx 性能差）| 支持 |
+| **延迟消息** | ❌ 需扩展 | ✅ **18 级 / 5.x 任意精确** | 插件 | 原生 |
+| **持久化** | 强（日志文件）| 强（CommitLog）| 中 | 强（BookKeeper）|
+| **消息回溯** | **强（按 offset / 时间戳）** | 支持 | 弱 | 支持 |
+| **多租户** | 弱 | 中 | 中 | ✅ **强（Namespace）** |
+| **跨地域复制** | MirrorMaker（外挂）| DLedger / Replicator | Federation 插件 | ✅ **原生 Geo-Replication** |
+| **运维复杂度** | 中（ZK / KRaft）| 中 | 低 | **高（两层架构）** |
+| **生态成熟度** | **极强**（Flink/Spark/Connect）| 阿里业务强 | 老牌广泛 | 后起新秀 |
+| **国内活跃度** | 中 | **极高** | 中（金融）| 增长中 |
+| **客户端 Go 支持** | kafka-go / sarama | rocketmq-client-go | streadway/amqp | pulsar-client-go |
+| **代表用户** | LinkedIn / 字节 / Uber | 阿里 / 美团 / 滴滴 | 金融 / 老牌业务 | 腾讯 / Yahoo |
+
+### 协作时序对比（同一消息发送 → 消费）
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant K as Kafka
+    participant R as RocketMQ
+    participant Q as RabbitMQ
+    participant Pu as Pulsar
+    participant Bk as BookKeeper
+    participant C as Consumer
+
+    Note over P,C: Kafka
+    P->>K: send(topic, msg, key)
+    K->>K: 按 key Hash 选分区 → 追加 log
+    C->>K: poll(offset)
+    K->>C: 零拷贝 sendfile
+
+    Note over P,C: RocketMQ
+    P->>R: send(topic, msg, shardingKey)
+    R->>R: 写 CommitLog（全部 topic 共享）
+    R->>R: 异步派生 ConsumeQueue 索引
+    C->>R: pull → 通过 ConsumeQueue 找 CommitLog 位置
+
+    Note over P,C: RabbitMQ (AMQP)
+    P->>Q: publish to Exchange
+    Q->>Q: 按 Routing Key 匹配 Binding → 路由到 Queue
+    Q->>C: 推送消息
+
+    Note over P,C: Pulsar (计算存储分离)
+    P->>Pu: send(topic, msg)
+    Pu->>Bk: 写多个 BookKeeper 节点
+    Bk->>Pu: 多数派 ack
+    Pu->>P: 返回 ack
+    C->>Pu: subscribe → Pu 从 Bk 读 → 返回 C
+```
+
+### 职责分层架构对比
+
+```
+Kafka（存储计算耦合）:
+  Producer/Consumer
+       ↓
+  Broker 集群（每 broker 既存日志又处理请求）
+       ↓
+  ZooKeeper / KRaft（元数据）
+
+RocketMQ（NameServer 路由）:
+  Producer/Consumer
+       ↓
+  NameServer（轻量路由，不存数据）
+       ↓
+  Broker 集群（CommitLog + Queue）
+
+Pulsar（计算存储分离 - 关键创新）:
+  Producer/Consumer
+       ↓
+  Broker 层（无状态计算 - 不存数据）
+       ↓
+  BookKeeper 层（分布式存储 - Ledger 多副本）
+
+  优势: Broker 重启不影响数据，扩展容易
+  代价: 两层都要运维，复杂度高
+```
+
+### 缺一不可分析（每个 MQ 不可替代的场景）
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 Kafka** | 大数据流 / 日志收集没合适方案（吞吐百万 + 长期保存 + 重放）|
+| **没 RocketMQ** | 业务事务消息要自实现 Outbox，延迟消息要外挂方案 |
+| **没 RabbitMQ** | 金融复杂路由（fanout/topic/direct/headers）失去优雅方案 |
+| **没 Pulsar** | 多租户 SaaS + 跨地域容灾失去最佳实践 |
+
+### 性能数据（生产参考）
+
+```
+Kafka:     单 Broker 600 MB/s 吞吐 / 100w+ QPS（小消息）/ P99 50-100ms（acks=all）
+RocketMQ:  单 Broker 200 MB/s / 10w QPS / P99 10-50ms
+RabbitMQ:  单 Broker 10 MB/s / 1-5w QPS / P99 < 1ms（最低延迟）
+Pulsar:    单 Broker 500 MB/s / 80w+ QPS / P99 5-20ms
+```
+
+### 怎么选（场景决策树）
+
+```mermaid
+flowchart TD
+    Q1{业务类型?}
+
+    Q1 -->|大数据 / 日志 / 流处理| Kafka
+    Q1 -->|业务消息| Q2
+    Q1 -->|复杂路由 / 金融| RabbitMQ
+    Q1 -->|多租户 / 跨地域 / 新项目| Pulsar
+    Q1 -->|轻量内部通知| Redis[Redis Streams / NSQ]
+
+    Q2{需要事务 / 延迟消息?}
+    Q2 -->|是| RocketMQ
+    Q2 -->|否| Kafka2[Kafka + Outbox]
+
+    style Kafka fill:#9f9
+    style RocketMQ fill:#9ff
+    style RabbitMQ fill:#ff9
+    style Pulsar fill:#f9f
+```
+
+**实战推荐表**：
+
+| 场景 | 首选 | 备选 |
+| --- | --- | --- |
+| 用户行为日志 / 监控指标 | **Kafka** | Pulsar |
+| 电商订单 / 支付 / 业务消息 | **RocketMQ** | Kafka + Outbox |
+| 金融交易复杂路由 | **RabbitMQ** | RocketMQ |
+| SaaS 多租户 | **Pulsar** | RocketMQ |
+| 跨地域多活 | **Pulsar** | RocketMQ DLedger |
+| 缓存失效广播 | **Redis Pub/Sub** | Kafka（重）|
+| 轻量任务队列 | **Redis Streams** / NSQ | RabbitMQ |
+| 数据同步 / CDC | **Kafka** + Canal/Debezium | Pulsar |
+
+### 反模式（生产不要踩）
+
+```
+❌ Kafka 用于业务事务消息 → 复杂（需自实现 Outbox）
+❌ Kafka 用于延迟消息 → 不原生（需外挂 / 时间轮）
+❌ RabbitMQ 用于大数据流 → 吞吐撑不住（万级 vs 百万级）
+❌ RocketMQ 用于全球流处理 → 生态弱（Flink / Spark 集成差）
+❌ Pulsar 用于小团队 / 简单业务 → 运维复杂度太高
+❌ Redis Pub/Sub 用于关键业务 → 不持久化，订阅者断开消息丢
+```
+
+### 一句话总结（D 模板专属）
+
+> 4 大 MQ 的核心选型是 **"业务特征决定，没有最好只有最合适"**：
+> **Kafka 大数据**（吞吐百万 + 顺序写 + 零拷贝 + 重放强）+ **RocketMQ 业务**（事务 + 延迟 + 顺序原生）+ **RabbitMQ 路由**（AMQP 复杂路由 + 低延迟）+ **Pulsar 多租户跨地域**（计算存储分离）。
+> **缺一不可**：Kafka 替代不了 RocketMQ 的事务消息，RabbitMQ 替代不了 Kafka 的百万吞吐，Pulsar 替代不了 Kafka 的生态。
+> **国内现状**：80% 互联网用 Kafka + RocketMQ 组合（Kafka 数据流 + RocketMQ 业务）。
+
+---
+
 ## 一、五大主流 MQ 速览
 
 ```mermaid
