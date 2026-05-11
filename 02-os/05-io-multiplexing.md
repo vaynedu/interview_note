@@ -2,6 +2,231 @@
 
 > IO 多路复用让一个线程可以管理大量连接，是 Nginx、Redis、Go netpoll 等高并发网络服务的基础。
 
+## 〇.5 多概念对比：select vs poll vs epoll（D 模板）
+
+### 一句话定位
+
+| 机制 | 一句话定位 |
+| --- | --- |
+| **select**（1983）| **bitmap 记 fd**，1024 上限 + 全量拷贝 + 全量遍历，**跨平台兼容**（Linux/BSD/Windows） |
+| **poll**（1986）| **链表代替 bitmap**，无 fd 上限，但**仍全量拷贝 + 全量遍历** |
+| **epoll**（Linux 2.5.44+）| **红黑树注册 + 就绪链表 + 回调**，O(1) 找就绪 fd，**Linux 主流** |
+
+### 多维度对比（15 维度，必背）
+
+| 维度 | select | poll | epoll |
+| --- | --- | --- | --- |
+| **诞生年份** | 1983（POSIX）| 1986 | 2002（Linux 2.5.44）|
+| **数据结构（用户态）** | fd_set（bitmap）| pollfd 数组（链表）| epoll_event 数组 |
+| **数据结构（内核态）** | bitmap 拷贝 | 链表拷贝 | **红黑树（注册）+ 就绪链表（rdllist）** |
+| **fd 上限** | **1024**（FD_SETSIZE，编译期定）| 无上限 | 无上限（受 /proc/sys/fs/nr_open）|
+| **拷贝方式** | 每次 epoll_wait 全量拷贝 fd_set | 每次全量拷贝 pollfd 数组 | **注册一次，常驻内核**（mmap 共享）|
+| **查找就绪 fd 复杂度** | **O(N)** 遍历 | **O(N)** 遍历 | **O(1)** 直接读 rdllist |
+| **就绪通知机制** | 内核遍历后修改 bitmap | 内核遍历后修改 pollfd.revents | **回调机制**（中断触发） |
+| **触发模式** | LT（水平触发）| LT | **LT 默认 + ET 可选**（边缘触发，高性能）|
+| **跨平台** | ✅ Linux / BSD / macOS / Windows | ✅ Linux / Unix | ❌ **仅 Linux**（BSD 用 kqueue）|
+| **API 函数** | select() | poll() | epoll_create / epoll_ctl / epoll_wait |
+| **性能（10w 连接）** | 毫秒级 | 毫秒级 | **微秒级** |
+| **CPU 消耗** | 高（全量遍历）| 高 | 低 |
+| **内存共享** | 无 | 无 | **mmap 共享 rdllist** |
+| **典型用户** | 旧版本 / 跨平台库 | 中等并发 | **Nginx / Redis / Go netpoll / Node.js / Java NIO** |
+| **代码复杂度** | 简单 | 简单 | LT 简单 / ET 复杂（必须循环 read 到 EAGAIN）|
+
+### 协作时序对比（监听 N 个 fd 的事件循环）
+
+```mermaid
+sequenceDiagram
+    participant App as 用户态
+    participant Kernel as 内核态
+    participant NIC as 网卡
+
+    Note over App,NIC: select / poll 流程（每次循环重复全量）
+    loop 事件循环
+        App->>Kernel: select(fdset)<br/>全量拷贝 fd_set 到内核
+        Kernel->>Kernel: 遍历所有 fd 检查是否就绪
+        Kernel-->>App: 修改后的 fd_set 拷贝回
+        App->>App: 全量遍历找就绪 fd
+        App->>App: 处理就绪 fd
+    end
+
+    Note over App,NIC: epoll 流程（注册一次，多次等待）
+    App->>Kernel: epoll_create() 创建 eventpoll
+    App->>Kernel: epoll_ctl(ADD, fd) 加入红黑树<br/>注册回调函数
+    Note over Kernel: fd 常驻内核，不需重复拷贝
+
+    NIC->>Kernel: 数据到达触发中断
+    Kernel->>Kernel: 回调把 fd 加入 rdllist
+
+    loop 事件循环
+        App->>Kernel: epoll_wait()
+        Kernel-->>App: 直接返回 rdllist 中的就绪 fd<br/>(mmap 共享，零拷贝)
+        App->>App: 处理就绪 fd（数量 = 真实就绪数，不是 N）
+    end
+```
+
+### 职责分层 / 内部结构
+
+```
+select 内部:
+  fd_set { uint8_t[1024/8] }  // bitmap
+  每次 select(): 用户 → 内核 全量拷贝 → 内核全量遍历 → 拷贝回 → 用户全量遍历
+
+poll 内部:
+  pollfd { fd, events, revents }
+  pollfd[] array
+  每次 poll(): 同 select 但用链表，无 1024 限制
+
+epoll 内部:
+  eventpoll {
+      rb_root   rbr;        // 红黑树（注册 fd）
+      list_head rdllist;    // 就绪链表
+      wait_queue wq;        // 等待队列
+  }
+
+  注册 (epoll_ctl ADD):
+    红黑树插入 fd
+    注册回调 ep_poll_callback
+
+  数据到达:
+    网卡 → 中断 → 内核处理
+    → 调用 ep_poll_callback
+    → fd 加入 rdllist
+
+  等待 (epoll_wait):
+    检查 rdllist 是否非空
+    非空 → mmap 拷贝就绪事件 → 返回
+    空 → wq 挂起进程 → 唤醒
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 select** | 旧应用 / 跨平台库失去标准 IO 多路复用接口 |
+| **没 poll** | select 的 1024 限制无法突破（不重编译内核）|
+| **没 epoll** | Linux 高并发服务（Nginx / Redis）退化 → 万级以上连接性能崩 |
+| **没 LT 模式** | 边界条件下数据可能"丢"（ET 必须 read 到 EAGAIN）|
+| **没 ET 模式** | 极致性能场景（Nginx）无法发挥 |
+
+### LT vs ET 深度对比（epoll 内部）
+
+| 维度 | LT（水平触发，默认）| ET（边缘触发）|
+| --- | --- | --- |
+| **触发条件** | fd 可读 → 每次 epoll_wait 都返回 | fd 状态变化时**只触发一次** |
+| **编程复杂度** | 简单（不必读完）| **复杂**（必须循环 read 到 EAGAIN）|
+| **效率** | 略低（同事件多次唤醒）| **高**（不重复唤醒）|
+| **漏读后果** | 下次 epoll_wait 还会返回 → 不丢 | **下次不返回 → 漏读数据丢** |
+| **业内使用** | Redis（简单可靠）| Nginx / Go netpoll（极致性能）|
+
+```c
+// LT 模式正确用法（简单）
+n = read(fd, buf, len);
+if (n > 0) process(buf, n);
+
+// ET 模式正确用法（必须循环）
+while (1) {
+    n = read(fd, buf, len);
+    if (n == -1 && errno == EAGAIN) break;  // 读完
+    if (n > 0) process(buf, n);
+}
+```
+
+### 性能数据（生产参考）
+
+```
+监听 10 万连接，1000 个就绪:
+
+select:
+  - 用户 → 内核 拷贝 10w fd_set = 12.5 KB
+  - 内核遍历 10w 个 fd
+  - 用户遍历 10w 个 fd 找就绪
+  - 单次 epoll_wait 等价: 1-10 ms
+
+poll:
+  - 同 select 但无 1024 限制
+  - 单次 ~1-10 ms
+
+epoll:
+  - 注册一次（毫秒级）
+  - 后续 epoll_wait: O(1) 直接读 rdllist
+  - 单次 ~微秒级
+  - → 10w 连接和 100 连接性能几乎一样
+
+差距: epoll 比 select 快 100-1000x（高并发场景）
+```
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{平台?}
+    Q1 -->|Linux| Q2
+    Q1 -->|跨平台 / BSD| Q3
+    Q1 -->|Windows| Sel[select / IOCP]
+
+    Q2{并发量?}
+    Q2 -->|< 100 fd| Sel2[select 也行]
+    Q2 -->|>= 100 fd| Epoll[epoll]
+
+    Q3{BSD / macOS?}
+    Q3 -->|是| KQ[kqueue（思路类似 epoll）]
+    Q3 -->|否| Poll[poll]
+
+    style Epoll fill:#9f9
+    style KQ fill:#9ff
+```
+
+**实战推荐**：
+
+| 场景 | 推荐 |
+| --- | --- |
+| Linux 高并发服务（>1k 连接）| **epoll** |
+| 跨平台库 / 学术研究 | select / poll |
+| 极致性能（Nginx 级别）| **epoll ET** |
+| 简单可靠（Redis 级别）| **epoll LT** |
+| BSD / macOS | **kqueue**（Go runtime 自动选用）|
+
+### Reactor 模式（epoll 的应用层封装）
+
+```
+单 Reactor 单线程（Redis 模式）:
+  一个线程跑 epoll_wait + 处理 + 响应
+  优: 简单，无锁
+  缺: 单核瓶颈
+
+单 Reactor 多线程:
+  主线程 epoll_wait + accept
+  Worker 线程池处理业务
+  优: 多核
+  缺: 主线程仍是瓶颈
+
+多 Reactor 多线程（Nginx / Netty 标准）:
+  主 Reactor: accept 连接
+  从 Reactor 池: 各自 epoll_wait + 处理
+  优: 充分利用多核
+  → 最广泛的高性能架构
+```
+
+### 反模式（生产不要踩）
+
+```
+❌ Linux 上用 select 处理高并发 → 1024 上限 + 性能差
+❌ epoll ET 模式但只 read 一次 → 漏读数据丢
+❌ epoll fd 注册但忘记 epoll_ctl DEL → 内存泄漏（红黑树越来越大）
+❌ epoll_wait 不设超时 → 没事件时永久阻塞
+❌ 在多线程中共享 epoll_fd 但不同步 → 数据竞争
+```
+
+### 一句话总结（D 模板专属）
+
+> select → poll → epoll 三代演进的核心是 **"从 O(N) 拷贝 + 遍历到 O(1) 回调"**：
+> select 有 1024 上限 + 全量拷贝 + 全量遍历 → poll 解决上限但仍全量 → epoll 用**红黑树常驻 + 就绪链表 + 回调机制**实现 O(1)。
+> **epoll 高效的根源**：红黑树常驻内核（无重复拷贝）+ 中断回调（无遍历）+ mmap 共享（无拷贝）。
+> **缺一不可**：select 跨平台兼容、poll 无 fd 上限、epoll 高性能、LT 简单、ET 极致。
+> **业内现状**：Linux 服务必选 epoll（Nginx / Redis / Go netpoll / Java NIO），BSD 用 kqueue（思路类似）。
+
+---
+
 ## 〇、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）

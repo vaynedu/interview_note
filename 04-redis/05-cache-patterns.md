@@ -216,6 +216,189 @@ vs 先写 DB 再删缓存（推荐）:
 
 ---
 
+## 〇.5 多概念对比：5 种缓存读写模式（D 模板）
+
+### 一句话定位
+
+| 模式 | 一句话定位 |
+| --- | --- |
+| **Cache-Aside（旁路）** | **应用层显式管理**：读 miss 回源 + 回填，写 → 写 DB → 删缓存，**工业标准** |
+| **Read-Through** | **缓存层封装"miss 自动回源"**，应用层只查缓存（框架支持，多数 Redis 不支持）|
+| **Write-Through（写穿）** | **写 → 缓存层同步写 DB**，强一致但写延迟高 |
+| **Write-Back（写回）** | **写 → 只写缓存立即返回，异步刷 DB**，写性能最高但缓存挂数据丢 |
+| **Refresh-Ahead** | **TTL 快过期前主动刷新**，防热 key 击穿，但实现复杂 |
+
+### 多维度对比（14 维度，必背）
+
+| 维度 | Cache-Aside | Read-Through | Write-Through | Write-Back | Refresh-Ahead |
+| --- | --- | --- | --- | --- | --- |
+| **管理方** | **应用层** | 缓存层 | 缓存层 | 缓存层 | 缓存层 |
+| **读路径** | 应用查缓存 miss → 查 DB → 回填 | 应用查缓存 → 框架自动 miss 回源 | 同 Cache-Aside | 同 Cache-Aside | 类似 Cache-Aside + 后台预刷 |
+| **写路径** | **写 DB → 删缓存** | 写 DB（应用层）| **写缓存 → 同步写 DB** | **写缓存 → 异步写 DB** | 写 DB → 删缓存（同 CA）|
+| **一致性** | 弱（小窗口脏）| 弱 | **强** | **极弱**（DB 可能落后）| 弱 |
+| **读性能** | 高（命中后无回源）| 高 | 高 | 高 | **最高**（永远命中）|
+| **写性能** | 高（DB + 删缓存）| - | **低**（同步写双方）| **最高**（只写缓存）| 高 |
+| **数据安全** | 高（DB 是真相）| 高 | 高 | **低**（缓存挂数据丢）| 高 |
+| **实现复杂度** | 低（应用层 if/else）| 低（框架封装）| 中（缓存层 + DB）| 中（异步刷盘）| **高**（后台任务 + 调度）|
+| **缓存挂掉影响** | 业务可走 DB（限流）| 业务可走 DB | 业务可写 DB（绕过缓存）| **数据丢失** | 业务可走 DB |
+| **应用层耦合** | **高**（要写缓存逻辑）| **低**（应用只查缓存）| 低 | 低 | 低 |
+| **典型实现** | Go/Java 业务代码 | Spring Cache / Hibernate L2 | EHCache / Coherence | EHCache | 自定义后台任务 |
+| **业内使用** | **95% 互联网业务** | Java 企业 | 关键写少读多 | 极少（数据可丢场景）| 超热 key 场景 |
+| **配合 Redis** | ✅ 完美 | ⚠️ 框架要支持 | ⚠️ 框架要支持 | ⚠️ 数据丢风险 | ✅ 配合 cache.RefreshAfterWrite |
+| **代表系统** | 大多数互联网业务 | Spring Cache | Coherence / Hazelcast | 内存数据库 | CDN 预热 |
+
+### 协作时序对比（写操作）
+
+```mermaid
+sequenceDiagram
+    participant App as 应用
+    participant Cache as 缓存
+    participant DB as DB
+
+    Note over App,DB: Cache-Aside（先写 DB 再删缓存）
+    App->>DB: 写 DB
+    DB-->>App: ok
+    App->>Cache: DEL key（让下次 miss）
+    Note over App: 下次读 miss → 重新加载
+
+    Note over App,DB: Write-Through（缓存层同步双写）
+    App->>Cache: 写入
+    Cache->>DB: 同步写 DB
+    DB-->>Cache: ok
+    Cache->>Cache: 写缓存
+    Cache-->>App: ok
+    Note over App: 写延迟 = 写缓存 + 写 DB
+
+    Note over App,DB: Write-Back（异步刷盘）
+    App->>Cache: 写入
+    Cache->>Cache: 写缓存（脏标记）
+    Cache-->>App: ok（立即返回）
+    Note over Cache,DB: 异步定期刷
+    Cache->>DB: 批量写 DB
+    DB-->>Cache: ok
+    Note over App: 写性能最高 / 缓存挂数据丢
+```
+
+### 协作时序对比（读操作 - 都类似但管理方不同）
+
+```mermaid
+sequenceDiagram
+    participant App as 应用
+    participant Cache as 缓存
+    participant DB as DB
+
+    Note over App,DB: Cache-Aside 读
+    App->>Cache: GET key
+    alt 命中
+        Cache-->>App: value
+    else miss
+        Cache-->>App: nil
+        App->>DB: SELECT
+        DB-->>App: value
+        App->>Cache: SET key value（回填）
+        App-->>App: 返回 value
+    end
+
+    Note over App,DB: Read-Through 读（应用层简化）
+    App->>Cache: GET key
+    Note over Cache: 缓存层封装 miss 处理
+    alt 命中
+        Cache-->>App: value
+    else miss
+        Cache->>DB: SELECT
+        DB-->>Cache: value
+        Cache-->>App: value
+    end
+```
+
+### 职责分层
+
+```
+应用层（管理者）       缓存层               DB 层
+─────────────       ──────────          ────────
+
+Cache-Aside:
+  ┌────────┐         ┌──────┐          ┌────┐
+  │  App   │ ───────►│ Cache│          │ DB │
+  │ (管理) │ ◄──miss─┤      │          │    │
+  │        │ ──回填─►│      │          │    │
+  └────┬───┘         └──────┘          └────┘
+       │                                  ▲
+       └──────────────────────────────────┘
+       (App 同时管缓存和 DB)
+
+Write-Through:
+  ┌────────┐         ┌──────┐          ┌────┐
+  │  App   │ ───────►│ Cache│ ───同步─►│ DB │
+  │        │ ◄───────┤(管理)│ ◄────────┤    │
+  └────────┘         └──────┘          └────┘
+       (Cache 层封装写 DB)
+
+Write-Back:
+  ┌────────┐         ┌──────┐    异步   ┌────┐
+  │  App   │ ───────►│ Cache│ ╌╌╌╌╌╌╌►│ DB │
+  │        │ ◄───立即┤(管理)│          │    │
+  └────────┘         └──────┘          └────┘
+       (DB 落后于 Cache，可能丢)
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 Cache-Aside** | 互联网业务失去最通用的缓存模式（95% 业务靠它）|
+| **没 Read-Through** | Java 企业应用要写大量 if/else 逻辑（Spring Cache 价值丢失）|
+| **没 Write-Through** | 强一致 + 读写分离场景失去标准方案 |
+| **没 Write-Back** | 极致写性能场景退化为同步（性能损失 10x+）|
+| **没 Refresh-Ahead** | 超热 key 击穿无优雅方案 |
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{业务诉求?}
+
+    Q1 -->|95% 通用场景| CA["Cache-Aside（推荐）"]
+    Q1 -->|强一致 + 读多写少 + 框架支持| WT[Write-Through]
+    Q1 -->|可丢数据 + 极致写性能| WB[Write-Back]
+    Q1 -->|Java 企业框架| RT[Read-Through]
+    Q1 -->|超热 key 防击穿| RA[Refresh-Ahead]
+
+    style CA fill:#9f9
+    style WT fill:#ff9
+    style WB fill:#fcc
+```
+
+**实战推荐**：
+
+| 场景 | 推荐 | 备注 |
+| --- | --- | --- |
+| 互联网常规业务（订单 / 用户）| **Cache-Aside** | 工业标准 |
+| 强一致 + 读多写少（配置中心）| **Write-Through** | 接受写延迟 |
+| 高频统计 / 计数器（可丢）| **Write-Back** | 异步刷 |
+| 超热 key（首页 banner）| **Refresh-Ahead** | 防击穿 |
+| Java 框架已支持 | **Read-Through**（Spring Cache）| 简化业务代码 |
+
+### 反模式（生产不要踩）
+
+```
+❌ Write-Back 用于关键数据 → 缓存挂数据丢
+❌ Cache-Aside 先删缓存再写 DB → 并发下缓存留旧值
+❌ Cache-Aside 写 DB 再"更新缓存"（不是删）→ 并发覆盖问题
+❌ Write-Through 用于写多场景 → 双写延迟翻倍
+❌ Refresh-Ahead 没控制并发 → 同时刷新多个超热 key → DB 抖动
+```
+
+### 一句话总结（D 模板专属）
+
+> 5 种缓存读写模式的核心是 **"谁管理 + 一致性 vs 性能"取舍**：
+> **Cache-Aside（应用管，最常用）** + **Read-Through（框架管）** + **Write-Through（强一致 + 慢写）** + **Write-Back（弱一致 + 快写）** + **Refresh-Ahead（防击穿）**。
+> **缺一不可**：CA 通用 / WT 强一致 / WB 极致写 / RA 防热 key 击穿，各有专属场景。
+> **业内现状**：95% 业务用 Cache-Aside（"先写 DB 再删缓存" + 业务幂等 + 短 TTL 兜底）。
+> **关键**：缓存可丢、DB 才是真相，强一致就别用缓存（或绕过缓存读 DB）。
+
+---
+
 ## 一、缓存读写模式（5 种）
 
 ```mermaid
