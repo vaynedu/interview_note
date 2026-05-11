@@ -2,6 +2,223 @@
 
 > Go 标准库并发原语：Mutex / RWMutex / WaitGroup / Once / Pool / Map / Cond / atomic
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **Mutex 两种模式** - 正常模式（FIFO 但允许新 goroutine 插队抢锁）+ 饥饿模式（等待 > 1ms 切换到严格 FIFO 防饿死）
+2. **RWMutex 读写分离** - 多读不互斥，读写互斥，**写优先**（防读饿写）
+3. **sync.Pool** - 协程本地缓存 + victim cache，**减少 GC 压力**，但**对象会被随时回收**（不能存关键状态）
+4. **sync.Map vs map+Mutex** - 读多写少 + key 集合稳定时 sync.Map 更优（无锁读）；写多场景 map+Mutex 更快
+
+### 核心本质（必懂）
+
+> sync 包的本质是 **"在 Go 语言层提供高效并发原语，避免开发者重复造轮子"**：
+>
+> - **Mutex 不是普通锁**：底层是**信号量 + 自旋 + Goroutine 调度**的混合（不是 OS Mutex）
+>   - 短时争用 → 自旋（避免 G 切换）
+>   - 长时争用 → 挂起到 sema 等待队列（避免 CPU 浪费）
+> - **RWMutex 是 Mutex + 计数器**：读用 atomic 计数，写需要等所有读完成
+> - **sync.Pool 是 GC 友好的对象池**：本地缓存 + victim cache，每次 GC 清空 victim
+> - **sync.Map 是为特定场景优化**：不是通用替代品
+>
+> **关键事实**：
+> - Mutex 不可重入（vs Java ReentrantLock）→ 同 G 重复 Lock 必死锁
+> - Mutex / RWMutex 不可复制（值拷贝会导致状态分裂）
+> - sync.Pool 对象**不保证存活**（可能下次 GC 就没了）
+> - sync.Map 不是 map 的并发版（API 不同，**性能也只在特定场景占优**）
+
+### 完整流程（面试必背）
+
+```
+sync.Mutex Lock 流程:
+
+1. Fast Path（无竞争）:
+   CAS 把 state 从 0 改成 1
+   成功 → 直接获得锁
+
+2. Slow Path（有竞争）:
+   - 检查是否能自旋（多核 + 短时间）
+   - 自旋等待: PAUSE 指令几次 → 重试 CAS
+   - 自旋失败 → 进入排队
+
+3. 排队等待:
+   - 把当前 G 加入 sema 等待队列
+   - park G（G 让出 M，进入 waiting 状态）
+   - 被唤醒 → 尝试拿锁
+
+4. 饥饿模式触发:
+   - 某个 G 等待 > 1ms 还没拿到锁
+   - 切换到饥饿模式: 锁交给队首 G
+   - 新来的 G 不能插队抢锁
+   - 队首 G 拿到锁后队列空 / 等待 < 1ms → 切回正常模式
+
+sync.RWMutex Lock 流程:
+
+读锁 (RLock):
+  - atomic 增加 readerCount
+  - 如果 < 0（有写锁等待）→ 排队等
+  - 否则 → 直接进入临界区
+
+写锁 (Lock):
+  - 获取底层 Mutex（写写互斥）
+  - readerCount -= rwmutexMaxReaders（让后续读阻塞）
+  - 等待所有现有读完成（readerWait 计数到 0）
+  - 进入临界区
+
+写优先逻辑:
+  写锁等待时，新的 readerCount 会被记到 readerWait
+  → 已有读完成才让写进 → 新读必须等写完
+  → 防读饿写
+
+sync.Pool Get/Put 流程:
+
+Get:
+  1. 取 P 私有对象 → 没有则
+  2. 取 P 本地共享队列 → 没有则
+  3. 偷其他 P 的共享队列 → 没有则
+  4. 检查 victim cache（上次 GC 留的）→ 没有则
+  5. New() 创建新对象
+
+Put:
+  1. 放回 P 私有 → 满了则
+  2. 放回 P 本地共享队列
+
+GC 时:
+  - 把 local（P 本地）转移到 victim
+  - 清空原 victim（即上次留的对象被回收）
+  → 对象最多存活 2 个 GC 周期
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. Mutex 两种模式（防饥饿）
+
+```
+正常模式（默认）:
+  锁释放时 → 唤醒等待队列首部 G
+  但新到来的 G 也能 CAS 抢锁（"插队"）
+  → 新 G 通常在 CPU 上 → 容易抢到 → 性能好
+  ✗ 等待队列里的老 G 可能长时间饿死
+
+饥饿模式（Go 1.9+）:
+  某 G 等待超过 1ms → 切换到饥饿模式
+  - 锁直接交给队首 G（不能被插队）
+  - 新 G 不能 CAS 抢，直接进队尾
+  → 严格 FIFO
+
+切换回正常模式:
+  - 队首 G 拿到锁后队列空
+  - 队首 G 等待时间 < 1ms
+  → 切回正常模式（性能优先）
+
+性能对比:
+  正常模式: 吞吐高，可能饿死
+  饥饿模式: 公平，吞吐略降
+```
+
+#### 2. RWMutex（写优先）
+
+```
+4 个核心字段:
+  w             Mutex          写写互斥
+  writerSem     信号量          写等待信号量
+  readerSem     信号量          读等待信号量
+  readerCount   int32          读者计数（写时为负）
+  readerWait    int32          写等待时还要等多少读完成
+
+读优先 vs 写优先:
+  Go 选择写优先（防读饿写）
+
+  RLock 时:
+    if readerCount < 0:  // 有写锁等待
+      → 当前读必须等
+    else:
+      readerCount++ → 进入临界区
+
+  Lock 时:
+    获取 w（写写互斥）
+    readerCount -= rwmutexMaxReaders（让后续读阻塞）
+    readerWait = readerCount  // 还要等多少现有读
+    等所有现有读完成 → 进入临界区
+
+性能特点:
+  读多写少 → RWMutex 显著优于 Mutex
+  写多 → RWMutex 反而不如 Mutex（额外原子操作）
+```
+
+#### 3. sync.Pool（GC 友好的对象池）
+
+```
+设计目标:
+  减少高频小对象的 GC 压力
+  例: HTTP request handler 复用 buffer
+
+数据结构（P 维度）:
+  每个 P 一个 poolLocal:
+    private:  本地私有（无锁，最快）
+    shared:   双端队列（可被其他 P 偷）
+  victim:     上次 GC 留下的（被 GC 前的备份）
+
+为什么 victim cache:
+  没 victim → 每次 GC 全清空 → 命中率骤降
+  有 victim → 平滑过渡（对象最多存活 2 个 GC 周期）
+  → 显著减少 New() 调用
+
+适用场景:
+  ✓ 高频分配的临时对象（buffer、解析器中间结构）
+  ✓ 对象状态可以重置（Put 前 Reset）
+  ✗ 对象数量需要严格控制
+  ✗ 对象不能丢（Pool 不保证存活）
+
+常见反模式:
+  Pool 中存 *bytes.Buffer
+  Get 后忘记 Reset → 携带上次的数据 → 数据污染
+```
+
+#### 4. sync.Map（特定场景的并发 map）
+
+```
+适用场景（官方明确）:
+  1. 读多写少（key 集合稳定）
+  2. 多 G 操作不相交的 key 集合
+  → 不是通用 map 替代品
+
+数据结构:
+  read map (atomic.Value): 只读副本，无锁访问
+  dirty map (普通 map):    需要 Mutex 保护
+  misses 计数:             累计 read miss 次数
+
+读流程:
+  1. 查 read map (无锁) → 命中直接返回
+  2. miss → 查 dirty map (加锁) → misses++
+  3. misses > len(dirty) → dirty 提升为 read
+
+写流程:
+  - read 中已存在 + 值非 nil → atomic 更新
+  - 否则 → 加锁，写 dirty
+
+性能特征:
+  读密集 + 稳定 key: 比 map+RWMutex 快 5-10x
+  写密集 / key 频繁变化: 比 map+Mutex 慢 2-3x
+  → 选择前必须明确场景
+
+业内实践:
+  缓存场景 ✓
+  计数器场景 ✗ (用 atomic 更快)
+  通用并发 map ✗ (用 map+Mutex)
+```
+
+### 一句话总结
+
+> sync 包的核心是：**Mutex 两种模式（正常 / 饥饿）+ RWMutex 写优先 + sync.Pool 二级缓存 + sync.Map 场景化优化**，
+> 本质是**Go 语言层的高效并发原语**：Mutex 不是 OS Mutex（混合自旋 + sema + G 调度）。
+> **Mutex 不可重入 + 不可复制**（vs Java ReentrantLock），**sync.Pool 对象不保证存活**（GC 会清），
+> **sync.Map 不是通用替代**（只适合读多写少 + 稳定 key）。
+> 高频场景能用 **atomic** 就别用 Mutex（无 G 切换开销）。
+
+---
+
 ## 一、核心原理
 
 ### 1.1 sync.Mutex
