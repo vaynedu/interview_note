@@ -200,30 +200,101 @@ Server 层日志:
 
 ## 一、核心原理
 
-### 1. 三类核心日志
+### 1. 三类核心日志（完整对比表）
 
-| 日志 | 所属层 | 作用 |
-| --- | --- | --- |
-| undo log | InnoDB | 事务回滚、MVCC 历史版本 |
-| redo log | InnoDB | 崩溃恢复、保证持久性 |
-| binlog | Server 层 | 主从复制、时间点恢复、审计 |
+#### 1.1 一句话定位
 
-最容易混的是 redo log 和 binlog：
+| 日志 | 一句话定位 |
+| --- | --- |
+| **undo log** | 实现事务**原子性**，主要用于**事务回滚 + MVCC 历史版本** |
+| **redo log** | 存储引擎层日志，实现事务**持久性**，主要用于 **crash-safe（崩溃恢复）** |
+| **binlog** | Server 层归档日志，主要用于**数据备份 + 主从复制 + 时间点恢复** |
 
-- redo log 偏物理，记录页的修改，用于崩溃恢复。
-- binlog 偏逻辑，记录 SQL 或行变更，用于复制和恢复。
-- redo log 循环写，binlog 追加写。
-- redo log 是 InnoDB 特有，binlog 是 Server 层能力。
+#### 1.2 多维度对比（必背）
+
+| 维度 | undo log | redo log | binlog |
+| --- | --- | --- | --- |
+| **所属层** | InnoDB 引擎层 | InnoDB 引擎层 | Server 层 |
+| **保证的 ACID 特性** | **原子性（A）** + 隔离性（I，配合 MVCC） | **持久性（D）** | 一致性（主从间） |
+| **核心作用** | 事务回滚 + MVCC 多版本 | 崩溃恢复（crash-safe） | 主从复制 + 数据备份 + 闪回 |
+| **日志类型** | 逻辑日志（记录"如何还原"） | 物理日志（记录"哪页哪偏移改成什么"） | 逻辑日志（记录 SQL / 行变更） |
+| **写入时机** | 事务执行中（修改前先写 undo） | 事务执行中（WAL 先写日志再改数据） | 事务提交时（commit 阶段） |
+| **写入方式** | 段（segment）管理 | **循环写**（覆盖老日志） | **追加写**（不覆盖，定期归档） |
+| **空间管理** | undo 表空间，事务结束 + purge 后回收 | 固定大小（如 1-4GB × 2 文件） | 持续增长（按时间 / 大小切分） |
+| **是否所有引擎都有** | 仅 InnoDB | 仅 InnoDB | 所有引擎（MyISAM 也写）|
+| **粒度** | 行级（前镜像）| 页级（16KB 内某段字节）| SQL 级（STATEMENT）/ 行级（ROW）|
+| **可读性** | 内部结构，不直接可读 | 二进制，不可读 | mysqlbinlog 工具可解析 |
+| **是否参与崩溃恢复** | ✓（回滚未提交事务）| ✓（前滚已提交事务） | ✗（主从复制用，不参与本机恢复）|
+| **是否参与主从复制** | ✗ | ✗ | ✓（主库 binlog → 从库 SQL 线程）|
+| **是否支持闪回** | ✗ | ✗ | ✓（ROW 格式，解析反向 SQL）|
+
+#### 1.3 写入顺序与协作
+
+```
+事务执行 + commit 的日志生成顺序:
+
+  1. 修改数据前 → 先写 undo log（保留旧版本）
+  2. 修改数据时 → 写 redo log buffer（WAL）
+  3. 修改 Buffer Pool 中的页（脏页）
+  4. commit 时 → 两阶段提交:
+     ① redo log prepare（fsync）
+     ② 写 binlog（fsync）
+     ③ redo log commit
+```
 
 ```mermaid
 flowchart TB
-    SQL["事务更新"] --> Undo["undo log<br/>回滚 / MVCC"]
-    SQL --> Redo["redo log<br/>崩溃恢复 / 持久性"]
-    SQL --> Binlog["binlog<br/>复制 / 时间点恢复"]
-    Redo --> Engine["InnoDB 层"]
-    Undo --> Engine
+    SQL["事务: UPDATE t SET name='B' WHERE id=1"]
+
+    SQL -->|① 先写| Undo["<b>undo log</b><br/>记录旧值 'A'<br/>用于回滚 / MVCC"]
+    SQL -->|② 再改内存| BP["Buffer Pool<br/>脏页"]
+    SQL -->|③ 同时写| Redo["<b>redo log</b><br/>记录页修改<br/>用于 crash recovery"]
+
+    Commit["commit 阶段"]
+    Commit -->|④ 2PC| Redo
+    Commit -->|⑤ 2PC| Binlog["<b>binlog</b><br/>记录行变更<br/>用于主从 / 备份"]
+
+    Undo --> Engine["InnoDB 引擎层"]
+    Redo --> Engine
+    BP --> Engine
     Binlog --> Server["Server 层"]
+
+    style Undo fill:#9f9
+    style Redo fill:#ff9
+    style Binlog fill:#9ff
 ```
+
+#### 1.4 三者职责分层（必懂）
+
+```
+┌─────────────────────────────────────┐
+│         Server 层（所有引擎共享）      │
+│  ┌──────────────────────────────┐   │
+│  │  binlog（主从复制 / 备份）     │   │
+│  └──────────────────────────────┘   │
+├─────────────────────────────────────┤
+│         InnoDB 存储引擎层            │
+│  ┌──────────────────────────────┐   │
+│  │  undo log（回滚 / MVCC）      │   │
+│  │  redo log（crash recovery）   │   │
+│  └──────────────────────────────┘   │
+└─────────────────────────────────────┘
+
+为什么这样分层:
+  - binlog 在 Server 层 → 所有引擎都能用（MyISAM 也有 binlog）
+  - redo / undo 在引擎层 → 是 InnoDB 实现 ACID 的内部机制
+  - 两阶段提交协调两层日志一致性 → 防主从不一致
+```
+
+#### 1.5 缺一不可（任何一个少了会怎样）
+
+| 假设 | 后果 |
+| --- | --- |
+| 没 undo log | 事务无法回滚 + 没有 MVCC → 读写互相阻塞 |
+| 没 redo log | 崩溃后已 commit 的事务数据丢失（脏页可能没刷盘）|
+| 没 binlog | 无法主从复制、无法 PITR（时间点恢复）、无法闪回 |
+| redo 和 binlog 不一致 | 主从永久不一致（必须 2PC 协调）|
+
 
 ### 2. undo log
 
