@@ -2,6 +2,271 @@
 
 > HTTP/1.1 → HTTP/2 → HTTP/3 / TLS 优化 / Brotli 压缩 / 分片并发 / Range / 连接复用
 
+## 〇、多概念对比：HTTP/1.1 vs HTTP/2 vs HTTP/3（D 模板）
+
+### 一句话定位
+
+| 协议 | 一句话定位 |
+| --- | --- |
+| **HTTP/1.1**（1997）| **基于 TCP 的文本协议**，持久连接 + Pipeline（但有队头阻塞），**仍占 30% 流量** |
+| **HTTP/2**（2015）| **二进制分帧 + 多路复用 + HPACK 头压缩 + 服务推送**，解决应用层队头阻塞，**仍是 TCP（有传输层队头阻塞）** |
+| **HTTP/3**（2022 RFC 9114）| **基于 QUIC（UDP）**，彻底解决队头阻塞 + 0-RTT 握手 + 连接迁移，**Google / Cloudflare / 国内大厂主推** |
+
+### 多维度对比（18 维度，必背）
+
+| 维度 | HTTP/1.1 | HTTP/2 | HTTP/3 |
+| --- | --- | --- | --- |
+| **发布年份** | 1997（RFC 2068）| 2015（RFC 7540）| 2022（RFC 9114）|
+| **传输层** | **TCP** | **TCP** | **QUIC（基于 UDP）** |
+| **协议格式** | **文本**（ASCII）| **二进制分帧** | 二进制分帧（QUIC 帧）|
+| **连接复用** | 每域名 6 个并行连接 | **单连接多路复用**（Stream）| **单连接多路复用**（独立 Stream，无 HoL）|
+| **应用层队头阻塞** | ⚠️ Pipeline 有 | ✅ 解决（多 Stream）| ✅ 解决 |
+| **传输层队头阻塞** | ⚠️ 存在 | ⚠️ **仍存在**（TCP 重传阻塞所有 Stream）| ✅ **彻底解决**（QUIC 每 Stream 独立）|
+| **头部压缩** | ❌（每次发完整头）| **HPACK**（静态表 + 动态表 + Huffman）| **QPACK**（HPACK 改进，解决乱序）|
+| **服务端推送** | ❌ | ✅ Server Push（**多数浏览器已废弃**）| ⚠️ 已移除（实际不实用）|
+| **优先级** | ❌ | Stream Priority Tree | Extensible Priority |
+| **握手开销** | TCP 3 次（1 RTT）+ TLS 2 RTT = **3 RTT** | TCP 1 RTT + TLS 1.3 1 RTT = **2 RTT** | **QUIC 1 RTT**（首连）/ **0 RTT**（复连）|
+| **0-RTT** | ❌ | TLS 1.3 可有 | ✅ **原生支持** |
+| **连接迁移**（IP 切换）| ❌（TCP 五元组绑定）| ❌ | ✅ **Connection ID**（手机切 WiFi 不断）|
+| **加密** | 可选（HTTPS 才加密）| **实际上必须 HTTPS**（浏览器要求）| **强制加密**（QUIC 内置 TLS 1.3）|
+| **拥塞控制** | TCP 内核（CUBIC / BBR）| TCP 内核 | **QUIC 用户态**（可定制 BBR / Reno）|
+| **丢包恢复** | TCP 重传 | TCP 重传（阻塞所有 Stream）| QUIC 独立 Stream 重传 |
+| **CPU 占用** | 低 | 中（HPACK + 二进制解析）| **高**（用户态 + 加密 + 包处理）|
+| **运维复杂度** | 低 | 中 | 高（UDP 防火墙 / NAT 穿透）|
+| **业内现状** | 30% 流量 | 50% 流量 | 20% 流量（增长中）|
+
+### 协作时序对比（同一页面：HTML + 5 CSS + 5 JS + 10 图）
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant S as Server
+
+    Note over B,S: HTTP/1.1（6 个并行连接）
+    B->>S: GET / (conn1)
+    S-->>B: index.html
+    par
+        B->>S: GET style.css (conn1)
+        B->>S: GET app.js (conn2)
+        B->>S: GET 1.png (conn3)
+        B->>S: GET 2.png (conn4)
+        B->>S: GET 3.png (conn5)
+        B->>S: GET 4.png (conn6)
+    end
+    Note over B,S: 队头阻塞: conn1 慢 → style.css 后的请求等待
+
+    Note over B,S: HTTP/2（单连接多 Stream）
+    B->>S: TCP + TLS 握手（1 个连接）
+    par
+        B->>S: GET /style.css (Stream 1)
+        B->>S: GET /app.js (Stream 3)
+        B->>S: GET /1.png (Stream 5)
+        B->>S: GET /2.png (Stream 7)
+        Note over B: 二进制分帧并发
+    end
+    Note over B,S: ⚠️ TCP 丢包 → 所有 Stream 都等
+
+    Note over B,S: HTTP/3（QUIC 多 Stream 独立）
+    B->>S: QUIC 1-RTT 握手
+    par
+        B->>S: GET /style.css (QUIC Stream 1)
+        B->>S: GET /app.js (QUIC Stream 2)
+        B->>S: GET /1.png (QUIC Stream 3)
+    end
+    Note over B,S: ✅ Stream 3 丢包 → 只影响 Stream 3
+```
+
+### 握手对比（首次连接的 RTT 开销）
+
+```
+HTTP/1.1（HTTPS）:
+  Client                    Server
+    │                          │
+    │── TCP SYN ──────────────→│  ┐
+    │←── TCP SYN+ACK ──────────│  │ TCP 1 RTT
+    │── TCP ACK ──────────────→│  ┘
+    │                          │
+    │── ClientHello ──────────→│  ┐
+    │←── ServerHello + Cert ───│  │ TLS 1.2: 2 RTT
+    │── KeyExchange + Fin ────→│  │
+    │←── Fin ──────────────────│  ┘
+    │                          │
+    │── HTTP GET ─────────────→│  ┐ 数据 1 RTT
+    │←── HTTP 200 ─────────────│  ┘
+                                   = 4 RTT total（首次）
+
+HTTP/2（HTTPS + TLS 1.3）:
+  TCP 1 RTT + TLS 1.3 1 RTT + HTTP 1 RTT = 3 RTT
+
+HTTP/3（QUIC）:
+  Client                    Server
+    │                          │
+    │── QUIC Initial + TLS ───→│  ┐
+    │←── QUIC Handshake + TLS ─│  │ QUIC 1 RTT 含 TLS
+    │── HTTP GET ─────────────→│  │
+    │←── HTTP 200 ─────────────│  ┘
+                                   = 1 RTT（首次）
+
+HTTP/3 0-RTT（已连接过）:
+  Client                    Server
+    │── QUIC + Resume + HTTP ─→│  ┐
+    │←── HTTP 200 ─────────────│  ┘ 0 RTT
+                                   首字节: 0 RTT!
+```
+
+### TCP HoL（队头阻塞）vs QUIC 独立 Stream
+
+```
+HTTP/2 over TCP（仍有传输层 HoL）:
+
+Stream 1: ──Packet A──Packet B──Packet C──→
+Stream 2: ──Packet D──Packet E──Packet F──→
+Stream 3: ──Packet G──Packet H──Packet I──→
+
+  TCP 把所有 Stream 的包混在一起按序传:
+  [A, D, G, B, E, H, C, F, I]
+
+  Packet D 丢了 → TCP 重传 D
+  → A 后面的包都阻塞（即使是 Stream 1 / 3 的）
+  → 所有 Stream 都等
+
+HTTP/3 over QUIC（每 Stream 独立）:
+
+Stream 1: ──Packet A──Packet B──Packet C──→
+Stream 2: ──Packet D──Packet E──Packet F──→
+Stream 3: ──Packet G──Packet H──Packet I──→
+
+  QUIC 每 Stream 独立编号 + 独立 ACK:
+  Packet D 丢了 → 只重传 D
+  → Stream 1 / 3 继续接收数据
+  → 真正的"无队头阻塞"
+```
+
+### HPACK / QPACK 头压缩对比
+
+```
+HTTP/1.1 头部（明文，每次发完整）:
+  GET / HTTP/1.1
+  Host: example.com
+  User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...
+  Accept: text/html,application/xhtml+xml,...
+  Accept-Language: zh-CN,zh;q=0.9
+  Cookie: session_id=abc; user_id=123; ...
+  → 700-1500 字节（重复率高）
+
+HTTP/2 HPACK:
+  静态表（61 个常见 header）+ 动态表（连接内可变）+ Huffman 编码
+  - 第一次发完整 → 加入动态表
+  - 之后只发索引（1-2 字节）
+  → 压缩率 85%+
+  缺陷: 动态表依赖顺序，丢包导致解码失败
+
+HTTP/3 QPACK:
+  HPACK 的改进，解决乱序问题:
+  - 编码流 + 解码流分离
+  - 解决 QUIC 包乱序到达的头部解码问题
+  → 同等压缩率 + 适配 QUIC 乱序
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 HTTP/1.1** | 互联网早期协议，仍 30% 流量，老服务 / API 仍依赖 |
+| **没 HTTP/2** | 单连接多路复用 + HPACK 失效，老页面回到每页几十个连接 |
+| **没 HTTP/3** | 移动端弱网 / WiFi 切换 / 跨国传输性能差 |
+| **没 0-RTT** | 高频请求场景（API 网关）每次握手都 1-3 RTT |
+| **没 QUIC 连接迁移** | 手机切网络 → 连接重建 → 长连接（如 IM / 视频）体验差 |
+
+### 性能数据（生产参考）
+
+```
+弱网场景（5% 丢包率，100ms RTT，1MB 页面）:
+
+HTTP/1.1: 5-8 秒
+  - 多连接竞争 + 队头阻塞 + 慢启动多次
+
+HTTP/2: 3-5 秒
+  - 单连接复用 + HPACK，但 TCP 丢包阻塞所有 Stream
+  - 实际比 1.1 好 30-40%
+
+HTTP/3: 1.5-3 秒
+  - QUIC 独立 Stream，丢包不影响其他
+  - 0-RTT（复连）几乎无握手
+  - 比 1.1 快 2-3 倍，比 2 快 30-50%
+
+强网场景（千兆 + 1ms RTT）:
+  三者差距小（< 10%），HTTP/2 已足够
+
+移动弱网（4G + 切 WiFi）:
+  HTTP/3 连接迁移 → 不断流（IM / 视频不卡）
+  HTTP/2 → 必须重建连接
+```
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{业务场景?}
+
+    Q1 -->|纯静态资源 / 老服务 / 简单 API| H1[HTTP/1.1<br/>仍可用]
+    Q1 -->|现代 Web / 大量小资源| H2[HTTP/2<br/>主流]
+    Q1 -->|移动端 / 弱网 / 跨国 / 视频直播| H3[HTTP/3<br/>新主流]
+    Q1 -->|内网 RPC| gRPC[gRPC over HTTP/2]
+
+    style H2 fill:#9f9
+    style H3 fill:#9ff
+```
+
+**实战推荐**：
+
+| 场景 | 推荐 | 备注 |
+| --- | --- | --- |
+| 国内电商 PC | **HTTP/2** | 兼容性最好 |
+| 国内电商 H5 / App | **HTTP/3** 优先 + HTTP/2 兜底 | 移动弱网 |
+| 跨国业务 / CDN | **HTTP/3** | 跨海洋抗丢包 |
+| 视频直播 / 大文件 | **HTTP/3** | 抗弱网 |
+| gRPC 内部调用 | **HTTP/2** | gRPC 标准 |
+| 老 API 兼容 | **HTTP/1.1** | 别动 |
+
+### TLS 1.2 vs TLS 1.3 对比（HTTP/3 内置）
+
+```
+TLS 1.2（HTTP/2 时代）:
+  - 握手 2 RTT
+  - 加密算法可选（RC4/3DES 不安全选项）
+  - Renegotiation 复杂
+
+TLS 1.3（HTTP/3 内置）:
+  - 握手 1 RTT（首次）/ 0 RTT（复连）
+  - 加密算法精简（AEAD only，去掉不安全选项）
+  - PFS 强制（每会话独立密钥）
+  - 移除 RSA Key Exchange（强制 ECDHE）
+  → 更快 + 更安全
+```
+
+### 反模式
+
+```
+❌ HTTP/2 over HTTP（无 TLS）→ 浏览器不支持
+❌ HTTP/3 没有 UDP 防火墙配置 → 大量企业网络阻断 UDP
+❌ HTTP/2 滥用 Server Push → 浏览器已废弃（实际效果差）
+❌ HTTP/3 客户端不做协议降级（Alt-Svc）→ 不兼容客户端访问失败
+❌ HTTPS 用 RSA 2048 + TLS 1.2 → 慢且不安全（应升级 ECDSA + TLS 1.3）
+❌ 同一域名混用 HTTP/1 和 HTTP/2 → 浪费连接（应该全升 2）
+❌ 期望 HTTP/3 0-RTT 完全替代 1-RTT → 0-RTT 有重放攻击风险（敏感 API 禁用）
+```
+
+### 一句话总结（D 模板专属）
+
+> 三代 HTTP 演进的核心是 **"解决队头阻塞 + 减少 RTT"两条主线**：
+> **HTTP/1.1**（TCP + 文本 + 队头阻塞）→ **HTTP/2**（TCP + 二进制分帧 + 多路复用 + HPACK，解决应用层 HoL 但 TCP HoL 仍在）→ **HTTP/3**（QUIC + UDP + 独立 Stream + 0-RTT + 连接迁移，彻底解决 HoL）。
+> **缺一不可**：1.1 仍占 30% 流量（老服务 / API）/ 2.0 是主流 / 3.0 是移动端 + 弱网未来。
+> **业内现状**：Google / Cloudflare / 国内 CDN（阿里 / 腾讯 / 字节）都已上 HTTP/3，移动 App 弱网场景比 HTTP/2 快 30-50%。
+> **关键事实**：HTTP/3 的核心创新是 **传输层换成 QUIC**（解决 TCP HoL）+ **连接迁移**（IP 切换不断）+ **0-RTT**（API 网关首字节 0 RTT）。
+
+---
+
 ## 一、HTTP 协议演进总览
 
 ```mermaid
