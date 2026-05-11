@@ -2,6 +2,196 @@
 
 > Go map：链式哈希表，bmap (bucket) + tophash 数组 + 溢出桶；非并发安全，迭代无序
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **hmap + bmap 两层结构** - hmap 是 map 的 header，包含若干 bmap（桶），每个 bmap 存 8 个 K/V
+2. **tophash 加速查找** - 每个 bmap 头部存 8 个 tophash（哈希值高 8 位），先比 tophash 再比 key
+3. **链式溢出桶** - 一个 bmap 满了 → 链一个 overflow bucket（避免立即扩容）
+4. **渐进式扩容（增量迁移）** - 触发条件：装载因子 > 6.5 或溢出桶过多；扩容时**双倍 + 增量迁移**
+
+### 核心本质（必懂）
+
+> Go map 的本质是 **"链式哈希表 + 渐进式扩容"**：
+>
+> - **不是简单数组**：是 hmap + 多个 bmap（每个 bmap 存 8 个 K/V）+ overflow chain
+> - **不是 java.HashMap**：Go map 用"开放定址 + 链式溢出"混合，不是纯链式
+> - **不是线程安全**：并发读写会触发 fatal error（不是 panic，无法 recover）
+>
+> **关键事实**：
+> - **迭代无序是故意的**：Go 在 1.0 就刻意打乱顺序，防止开发者依赖
+> - **删除不释放 bucket**：DELETE 只标记 tophash = empty，bucket 不缩
+> - **扩容是渐进的**：触发后不一次性迁移，每次 GET/SET 顺带迁移 1-2 个 bucket
+> - **并发安全方案**：sync.Map（特定场景）/ map + Mutex（通用）
+
+### 完整流程（面试必背）
+
+```
+hmap 结构（runtime/map.go）:
+  type hmap struct {
+      count     int            // map 大小
+      B         uint8          // bucket 数量 = 2^B
+      noverflow uint16         // 溢出桶数量
+      hash0     uint32         // hash seed（防 hash 碰撞攻击）
+      buckets   unsafe.Pointer // bucket 数组
+      oldbuckets unsafe.Pointer // 扩容时的老 bucket
+      nevacuate uintptr        // 已迁移的 bucket 数（渐进式扩容用）
+  }
+
+bmap 结构（单个 bucket）:
+  type bmap struct {
+      tophash [8]uint8  // 8 个 K/V 的哈希高 8 位
+      // [8]K              // 8 个 key 紧凑排列
+      // [8]V              // 8 个 value 紧凑排列
+      // overflow *bmap    // 指向溢出桶
+  }
+  → 一个 bucket 容纳 8 个 K/V
+  → K/V 分开存（不是 KVKV 交替）→ 内存对齐 + 缓存友好
+
+写入流程 SET m[k] = v:
+  1. hash = hash(k) ^ hmap.hash0  // 加 seed 防碰撞攻击
+  2. bucketIdx = hash & (2^B - 1) // 低 B 位定位 bucket
+  3. tophash = hash >> (64-8)      // 高 8 位作为 tophash
+  4. 在 bucketIdx 对应 bmap 中遍历:
+     - 找 tophash 匹配的位置（fast path）
+     - tophash 匹配 → 比对完整 key
+     - key 匹配 → 更新 value
+  5. 没找到 + bmap 有空槽 → 写入空槽
+  6. 没找到 + bmap 满了 → 检查 overflow bucket
+  7. overflow 链上都满了 → 触发扩容 / 加新 overflow
+
+查找流程 GET m[k]:
+  1. 同上算 hash / bucketIdx / tophash
+  2. 遍历 bucket + overflow chain
+  3. tophash 匹配 → 比 key → 返回
+  4. 全部不匹配 → 返回零值
+
+扩容条件（满足任一）:
+  - count / 2^B > 6.5（装载因子 > 6.5）
+  - noverflow > 阈值（溢出桶太多）
+
+扩容流程（渐进式）:
+  1. 触发时不立即迁移
+  2. oldbuckets = buckets, buckets = 分配新（2x 或同 size）
+  3. 每次 GET/SET 操作顺带迁移 1-2 个 bucket（增量）
+  4. nevacuate 记录已迁移数量
+  5. 全部迁移完 → 释放 oldbuckets
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. hmap + bmap（为什么 8 个 K/V 一桶）
+
+```
+8 个 K/V 一桶的设计:
+  - 减少桶数量（指针开销）
+  - 利用 CPU 缓存行（典型 64 字节）
+  - tophash 数组连续 → SIMD 友好
+
+vs Java HashMap（一桶一节点）:
+  Java: Entry[] + 链表 / 红黑树
+  Go: bmap[] + overflow chain（一桶 8 元素）
+  → Go 内存更紧凑 + 缓存友好
+
+K/V 分开存（不是 KVKV）:
+  type bmap {
+      tophash [8]uint8
+      keys [8]K
+      values [8]V
+      overflow *bmap
+  }
+  → 内存对齐（K 和 V 类型大小不同时避免 padding）
+  → 缓存友好（连续访问 K 数组）
+```
+
+#### 2. tophash 加速
+
+```
+作用:
+  避免每次都比完整 key（key 可能是 string，比对开销大）
+
+流程:
+  hash = hash(k)
+  tophash = hash >> (64-8)  // 取高 8 位
+
+  bucket 中：
+  for i := 0; i < 8; i++ {
+      if bucket.tophash[i] == tophash {
+          // 才比完整 key
+          if bucket.keys[i] == k {
+              return bucket.values[i]
+          }
+      }
+  }
+
+特殊 tophash 值:
+  emptyRest (0): 该槽位空 + 后续也空 → 提前结束
+  emptyOne (1):  该槽位空（删除后状态）
+  evacuatedX/Y (2/3): 扩容中迁移到新桶的标记
+
+性能:
+  tophash 比对是 1 字节比较（vs string 比对几十字节）
+  → 快 10x+
+```
+
+#### 3. 溢出桶（避免立即扩容）
+
+```
+为什么有溢出桶:
+  bucket 满了不一定要扩容（扩容贵）
+  先加 overflow 缓冲一下
+
+链式结构:
+  bucket → overflow → overflow → ...
+
+何时真正扩容:
+  - 装载因子 > 6.5（平均每桶 6.5 个元素）
+  - 或 noverflow > 阈值（溢出桶太多 = 退化为链表）
+
+扩容触发后:
+  - 装载因子高 → 双倍扩容（buckets 翻倍）
+  - 溢出桶多但装载因子不高 → 等量扩容（重新分布 + 清理溢出桶）
+```
+
+#### 4. 渐进式扩容（避免卡顿）
+
+```
+传统 rehash 问题:
+  一次性把所有元素重 hash 到新桶
+  100w 元素 = 几百 ms 卡顿
+
+Go 渐进式:
+  1. 触发扩容: 分配新 buckets（2x），保留 oldbuckets
+  2. 每次 GET/SET 顺带迁移 1-2 个 bucket
+  3. 渐进完成
+
+具体迁移:
+  对 oldbucket[i] 中的每个元素:
+  - hash 取低 (B+1) 位
+  - 比原来多一位决定去 X 桶（新桶 i）还是 Y 桶（新桶 i + 2^B）
+  - 标记 oldbucket tophash = evacuatedX/Y
+
+期间访问:
+  - GET: 先查新 bucket，没有则查 old（如果未迁移）
+  - SET: 写新 bucket
+  - 触发迁移 oldbucket[i] 和它的 overflow chain
+
+代价:
+  - 期间内存翻倍（new + old 并存）
+  - 操作稍慢（要查两处）
+  - 但避免单次大卡顿
+```
+
+### 一句话总结
+
+> Go map 的核心是：**hmap + bmap 两层结构 + tophash 加速 + 链式溢出桶 + 渐进式扩容**，
+> 本质是**链式哈希表 + 8 元素一桶 + 增量迁移**：内存紧凑、缓存友好、避免扩容卡顿。
+> **三大坑**：非并发安全（并发读写 fatal）、迭代无序（故意打乱）、删除不缩内存。
+> **并发方案**：读多写少 + 稳定 key 用 sync.Map；通用场景用 map + Mutex；超高频用 atomic.Pointer + 整体替换。
+
+---
+
 ## 一、核心原理
 
 ### 1.1 底层结构

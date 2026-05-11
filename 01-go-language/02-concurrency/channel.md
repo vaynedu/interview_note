@@ -2,6 +2,227 @@
 
 > CSP 通信原语：环形缓冲队列 + 两个等待队列 + 互斥锁；"不要通过共享内存来通信，要通过通信来共享内存"
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **hchan 结构** - 环形缓冲数组（buf）+ 两个等待队列（sendq / recvq）+ 互斥锁（lock）
+2. **三种 channel** - 无缓冲（同步交接 sender ↔ receiver）/ 有缓冲（buf 未满写入 / 未空读取）/ nil（永久阻塞）
+3. **优雅关闭原则** - **只有 sender 能 close**，**多 sender 用 sync.Once 或独立 done channel**
+4. **select 多路复用** - 随机选择就绪 case，default 非阻塞，结合 timer / context 做超时
+
+### 核心本质（必懂）
+
+> channel 的本质是 **"goroutine 间的同步队列 + 调度配合"**：
+>
+> - **不是普通队列**：是 goroutine 调度器深度集成的同步原语
+> - **同步交接**：无缓冲 channel 是 sender goroutine 直接把数据**复制**到 receiver 的栈（不走 buf）
+> - **阻塞用 G 挂起**：满 / 空时 sender / receiver 挂到 sendq / recvq，被对方唤醒
+>
+> **关键事实**：
+> - **channel 是有锁的**（hchan.lock）：高频场景仍是性能瓶颈，原子操作（atomic）更快
+> - **关闭已关闭的 channel 会 panic**：必须明确"由谁关闭"
+> - **向已关闭的 channel 发送会 panic**：但接收仍可读到剩余数据 + 零值
+> - **nil channel 永久阻塞**：用于动态关闭某个 select case
+
+### 完整流程（面试必背）
+
+```
+hchan 结构（runtime/chan.go）:
+  type hchan struct {
+      qcount   uint           // buf 中元素数
+      dataqsiz uint           // buf 容量（make 时定）
+      buf      unsafe.Pointer // 环形缓冲数组指针
+      elemsize uint16         // 元素大小
+      closed   uint32         // 是否已关闭
+      sendx    uint           // 发送索引（环形位置）
+      recvx    uint           // 接收索引
+      recvq    waitq          // 阻塞的 receiver 队列
+      sendq    waitq          // 阻塞的 sender 队列
+      lock     mutex
+  }
+
+发送 ch <- v 流程:
+  1. lock(&ch.lock)
+  2. 如果 ch.closed → panic
+  3. 如果 recvq 非空（有 receiver 在等）:
+     - 直接把 v 复制到 receiver 的栈
+     - 唤醒该 receiver
+     - unlock + 返回
+  4. 如果 buf 未满（len < cap）:
+     - 把 v 写入 buf[sendx]
+     - sendx++, qcount++
+     - unlock + 返回
+  5. buf 满了（或无缓冲）:
+     - 当前 G 加入 sendq
+     - gopark 挂起 G（让出 M）
+     - 被 receiver 唤醒后继续
+
+接收 v := <-ch 流程（对称）:
+  1. lock
+  2. sendq 非空 + buf 满 → 取 buf[recvx]，从 sendq 复制数据进 buf，唤醒 sender
+  3. buf 非空 → 取 buf[recvx]，recvx++, qcount--
+  4. buf 空 + sendq 空 + 已关闭 → 返回零值 + ok=false
+  5. buf 空 + sendq 空 + 未关闭 → 当前 G 加入 recvq → gopark
+
+无缓冲 channel 的同步交接:
+  sender 来时无 receiver → 挂起到 sendq
+  receiver 来时找到 sendq 中的 sender:
+    - 直接复制 sender 栈中的数据到 receiver 栈
+    - 唤醒 sender
+    - 没有经过 buf！
+
+select 流程（多路复用）:
+  1. 收集所有 case 的 channel
+  2. 按地址排序加锁（防死锁）
+  3. 检查每个 case 是否就绪
+  4. 有就绪 → 随机选一个执行
+  5. 都不就绪 + 有 default → 走 default
+  6. 都不就绪 + 无 default:
+     - G 加入所有 channel 的等待队列
+     - gopark 挂起
+     - 任一就绪 → 唤醒 G
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. hchan 结构
+
+```
+环形缓冲数组（buf）:
+  有缓冲: 分配 cap × elemsize 字节
+  无缓冲: buf = nil
+
+  sendx / recvx 模 dataqsiz 形成环形:
+    sendx 写入位置（生产者）
+    recvx 读取位置（消费者）
+    qcount 当前元素数
+
+等待队列（waitq）:
+  sendq: 阻塞的 sender G 链表
+  recvq: 阻塞的 receiver G 链表
+
+  每个 sudog 节点:
+    - 阻塞的 G
+    - 要发送/接收的数据指针
+
+锁（mutex）:
+  hchan.lock 保护所有字段
+  → 每次操作必须加锁
+  → 高并发是潜在瓶颈
+```
+
+#### 2. 三种 channel 行为
+
+```
+无缓冲 channel (make(chan T)):
+  buf = nil, cap = 0
+  sender 无 receiver → 立即阻塞
+  receiver 无 sender → 立即阻塞
+  → 同步交接，必须双方同时在场
+
+有缓冲 channel (make(chan T, n)):
+  buf 容量 n
+  buf 未满 → 写入不阻塞
+  buf 未空 → 读取不阻塞
+  → 异步通信
+
+nil channel:
+  send / recv 永久阻塞
+  close 会 panic
+
+  用途:
+  在 select 中动态"关闭"某个 case
+  case <-doneCh: doneCh = nil  // 之后不再被选中
+```
+
+#### 3. 关闭原则（避免 panic）
+
+```
+原则 1: 只有 sender 能关闭
+  receiver 不应该关闭（不知道 sender 是否还会写）
+  关闭已关闭 → panic
+  向已关闭写 → panic
+
+原则 2: 多个 sender 时的关闭
+  方案 A: 引入"总关闭信号" channel
+    done := make(chan struct{})
+    sender:
+      select {
+      case ch <- v:
+      case <-done: return
+      }
+    // 关闭：close(done) → 所有 sender 退出
+    // 不直接 close(ch)
+
+  方案 B: sync.Once 包装
+    var closeOnce sync.Once
+    closeOnce.Do(func() { close(ch) })
+
+原则 3: 检测已关闭
+  v, ok := <-ch
+  if !ok {
+      // channel 已关闭且无数据
+  }
+
+  for v := range ch {
+      // 自动结束 when ch 关闭且空
+  }
+```
+
+#### 4. select 多路复用
+
+```
+特性:
+  - 随机选择就绪 case（防饥饿）
+  - default 实现非阻塞
+  - 都阻塞时 G 挂起，任一就绪即唤醒
+
+常见模式:
+
+1. 超时控制:
+   select {
+   case v := <-ch:
+   case <-time.After(1 * time.Second):
+       return errors.New("timeout")
+   }
+
+2. context 取消:
+   select {
+   case <-ctx.Done(): return ctx.Err()
+   case v := <-ch: process(v)
+   }
+
+3. 非阻塞发送:
+   select {
+   case ch <- v:  // 成功
+   default:       // 没人接，丢弃
+   }
+
+4. 多源复用:
+   for {
+       select {
+       case v := <-ch1: process1(v)
+       case v := <-ch2: process2(v)
+       case <-done: return
+       }
+   }
+
+性能坑:
+  time.After 每次都创建新 timer + 不释放（GC 前一直存在）
+  长时间循环用 time.NewTimer + timer.Reset
+```
+
+### 一句话总结
+
+> channel 的核心是：**hchan = 环形 buf + 两个等待队列 + 互斥锁**，
+> 本质是 **goroutine 间同步队列 + 调度器深度集成**：无缓冲是同步交接（sender ↔ receiver 直接复制），有缓冲是异步通信。
+> **三大坑**：关闭已关闭 channel panic / 向已关闭 channel 写 panic / nil channel 永久阻塞。
+> **关闭原则**：只有 sender 能关闭、多 sender 用 done 信号 / sync.Once。
+> **性能**：channel 有锁，高频小数据用 atomic 更快；channel 适合"任务流水线 + 信号通知 + 多路 select"场景。
+
+---
+
 ## 一、核心原理
 
 ### 1.1 底层结构

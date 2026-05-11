@@ -2,6 +2,179 @@
 
 > Go 切片：底层数组 + 长度 + 容量的三元组；引用类型，传递的是 header 副本但共享底层数组
 
+## 〇、核心提炼（5 段式）
+
+### 核心机制（4 条必背）
+
+1. **三元组 header 结构** - `{*array, len, cap}`，header 是值类型但 `*array` 指向底层数组（**多个 slice 可共享底层**）
+2. **扩容规则** - cap < 256 翻倍；cap ≥ 256 按 1.25x 增长（Go 1.18+，旧版本是 1024 阈值的 2x/1.25x）
+3. **append 行为** - 容量够 → 复用底层数组；容量不够 → 分配新数组 + 拷贝
+4. **传递是 header 副本** - 函数内 append 可能不影响外部（如果触发扩容指向新数组），但修改元素一定影响
+
+### 核心本质（必懂）
+
+> slice 的本质是 **"动态数组的轻量级 wrapper"**：
+>
+> - **不是引用类型**（严格说）：传值传 header（24 字节：指针 + 长度 + 容量）
+> - **看起来像引用**：因为 header 中的指针指向同一底层数组
+> - **append 是危险操作**：可能返回新 slice（扩容），也可能修改原 slice（共享底层）
+>
+> **关键事实**：
+> - **不同 slice 可能共享底层数组**：`s[1:3]` 与 `s` 共享，修改其一影响另一个
+> - **append 是否扩容不可见**：业务代码看不出来，必须用返回值
+> - **扩容会复制**：大 slice 频繁 append 会有内存分配 + 拷贝开销
+> - **slice 不能比较**（除了与 nil）：因为内容是动态的
+
+### 完整流程（面试必背）
+
+```
+slice 底层结构（runtime/slice.go）:
+  type slice struct {
+      array unsafe.Pointer  // 指向底层数组
+      len   int             // 长度（已使用）
+      cap   int             // 容量（最大可用）
+  }
+
+make([]T, len, cap):
+  1. 分配大小为 cap × sizeof(T) 的底层数组
+  2. 返回 header { array: 数组指针, len: len, cap: cap }
+
+append(s, x):
+  1. 如果 len(s) < cap(s):
+     - 在 s[len] 位置写入 x
+     - 返回新 header { array: 原指针, len: len+1, cap: cap }
+     - 不分配新内存
+
+  2. 如果 len(s) == cap(s):
+     - 计算新 cap（按扩容规则）
+     - 分配新数组（newCap × sizeof(T)）
+     - 拷贝原数组到新数组
+     - 在新数组末尾写入 x
+     - 返回新 header { array: 新指针, len: len+1, cap: newCap }
+     - 原 slice 不受影响（除非赋值覆盖）
+
+扩容规则（Go 1.18+ growslice）:
+  oldCap < 256:    newCap = oldCap × 2
+  oldCap >= 256:   newCap = oldCap + (oldCap + 3*256)/4  // 平滑过渡到 1.25x
+
+  最终 newCap 还要 roundup 到内存分配器的 size class
+
+切片操作:
+  s[low:high]:
+    - 返回 header { array: &s.array[low], len: high-low, cap: cap(s)-low }
+    - 共享底层数组（!）
+
+  s[low:high:max]:
+    - 同上但 cap 限定为 max-low
+    - 限制后续 append 不会污染原 slice
+```
+
+### 4 条核心机制 - 逐点讲透
+
+#### 1. 三元组 header（不是引用类型）
+
+```
+误解: "slice 是引用类型"
+真相: slice 是值类型（24 字节 header），但 header 中的指针指向共享底层
+
+证据:
+  func f(s []int) {
+      s[0] = 999       // 改元素 → 影响外部（共享底层）
+      s = append(s, 1) // append → header 改变，外部不知道
+      s[0] = 888       // 此时改的可能是新数组（扩容时）
+  }
+
+  var a = []int{1, 2, 3}
+  f(a)
+  // a[0] 一定是 999（修改元素）
+  // a 的长度不变（append 在 f 内的 s 上）
+  // a[0] 可能是 999 或 888（看是否扩容）
+
+正确改外部:
+  s = append(s, x)     // 函数返回新 slice 让调用者接
+  func f(s *[]int)     // 传指针
+```
+
+#### 2. 扩容规则（避免误解）
+
+```
+Go 1.17 及之前:
+  cap < 1024: newCap = oldCap × 2
+  cap >= 1024: newCap = oldCap × 1.25
+
+Go 1.18+:
+  cap < 256: newCap = oldCap × 2
+  cap >= 256: newCap = oldCap + (oldCap + 3 × 256) / 4
+  → 平滑过渡（避免 1024 处的突变）
+
+最终内存:
+  newCap 还要根据 sizeof(T) 对齐到内存分配器 size class
+  → 实际 cap 可能略大于计算值
+
+预分配优化:
+  s := make([]int, 0, expectedSize)  // 一次到位
+  for ... { s = append(s, x) }
+  → 避免多次扩容 + 拷贝
+  → 大数据场景必做
+```
+
+#### 3. append 行为（陷阱）
+
+```
+共享底层的陷阱:
+  s := []int{1, 2, 3, 4, 5}  // len=5, cap=5
+  s1 := s[:3]                 // [1,2,3]，len=3, cap=5（共享）
+  s2 := append(s1, 99)        // [1,2,3,99]，cap=5 → 不扩容
+
+  s[3]  // 99！s2 的 append 改写了 s 的第 4 个元素
+
+解决方案 1: 三参数切片
+  s1 := s[:3:3]               // cap 限定 3
+  s2 := append(s1, 99)        // cap 不够 → 扩容 → 新数组
+  s[3] // 还是 4，未被改
+
+解决方案 2: 显式拷贝
+  s1 := make([]int, 3)
+  copy(s1, s[:3])
+
+为什么这个坑常见:
+  range / 函数传参 / sub-slice 都共享底层
+  写库函数时要特别小心
+```
+
+#### 4. 传递是 header 副本
+
+```
+24 字节 header（64 位系统）:
+  - 8 字节 array 指针
+  - 8 字节 len
+  - 8 字节 cap
+
+函数调用时:
+  Go 按值传 header（24 字节拷贝）
+  但 array 指针指向同一底层数组
+
+性能含义:
+  - slice 传参不是"全拷贝"（只 24 字节）
+  - 不需要传 *[]T 来"避免拷贝"
+  - 但要明白共享底层
+
+API 设计:
+  func process(data []int) error              // OK，传 header
+  func processInPlace(data []int) error       // 修改 data 内容
+  func extend(data []int) ([]int, error)      // 可能扩容时返回新 slice
+  func extendInPlace(data *[]int) error       // 强制原 slice 反映新长度
+```
+
+### 一句话总结
+
+> slice 的核心是：**三元组 header（指针+len+cap）+ 扩容规则（1.18+ 平滑 2x→1.25x）+ append 可能扩容也可能共享 + 传值是 header 副本**，
+> 本质是**动态数组的轻量级 wrapper**：header 是值类型，但指针让多个 slice 共享底层数组。
+> **三大坑**：append 是否扩容看运行时（外部接返回值最稳）；sub-slice 共享底层（修改互相影响）；并发 append 不安全（必须加锁）。
+> **优化**：`make([]T, 0, cap)` 预分配，`s[:n:n]` 三参数切片防写入污染。
+
+---
+
 ## 一、核心原理
 
 ### 1.1 底层结构
