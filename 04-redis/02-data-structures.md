@@ -2,6 +2,251 @@
 
 > 5 经典（String/List/Hash/Set/ZSet）+ 4 进阶（Bitmap/HyperLogLog/Geo/Stream）/ 底层编码（SDS/listpack/quicklist/skiplist/intset/hashtable）/ 场景选型
 
+## 〇、多概念对比：9 大 Redis 数据结构（D 模板）
+
+### 一句话定位
+
+| 数据结构 | 一句话定位 |
+| --- | --- |
+| **String** | **二进制安全字符串**（SDS），最通用，**缓存 / 计数 / 分布式锁 / Session** |
+| **List** | **双端队列**（listpack / quicklist），**消息队列 / 时间轴 / 最近 N 条**，LPUSH+BRPOP |
+| **Hash** | **字段集合**（listpack / hashtable），**对象存储**（user:1 → name/age/email），节省键空间 |
+| **Set** | **无序唯一集合**（intset / hashtable），**标签 / 好友 / 共同关注**（SINTER 求交集）|
+| **ZSet** | **有序集合**（listpack / skiplist + dict），**排行榜 / 延迟队列 / 范围查询** by score |
+| **Bitmap** | **位图**（基于 String），**签到 / 用户活跃统计 / Bloom Filter**，1 亿 bit = 12MB |
+| **HyperLogLog** | **基数估计**（~0.81% 误差），固定 12KB 内存计**亿级 UV**，PFADD/PFCOUNT |
+| **Geo** | **地理位置**（基于 ZSet），**附近的人 / 配送范围**，GEOADD/GEORADIUS |
+| **Stream** | **消息流**（5.0+，类 Kafka），**消费者组 + ACK + 持久化**，IM / 事件溯源 |
+
+### 多维度对比（18 维度，必背）
+
+| 维度 | String | List | Hash | Set | ZSet | Bitmap | HLL | Geo | Stream |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **底层编码** | int / embstr / raw（SDS）| listpack / quicklist | listpack / hashtable | intset / listpack / hashtable | listpack / skiplist+dict | String（位操作）| 稀疏 / 密集 16384 桶 | ZSet（geohash 编码）| Radix Tree |
+| **容量** | 512MB | 2^32-1 | 2^32-1 字段 | 2^32-1 | 2^32-1 | 2^32 bit = 512MB | 固定 12KB | 同 ZSet | 内存允许范围 |
+| **元素唯一** | - | ❌（可重复）| key 唯一 | ✅ 唯一 | ✅ 唯一（按 member）| - | ✅ 去重估算 | ✅（member 唯一）| - |
+| **元素有序** | - | ✅（插入顺序）| ❌ | ❌ | ✅（按 score）| 位顺序 | ❌ | ✅（按地理）| ✅（按 ID）|
+| **核心命令** | SET / GET / INCR / DECR | LPUSH / RPUSH / LRANGE / BRPOP | HSET / HGET / HGETALL | SADD / SMEMBERS / SINTER | ZADD / ZRANGE / ZRANGEBYSCORE | SETBIT / GETBIT / BITCOUNT / BITOP | PFADD / PFCOUNT / PFMERGE | GEOADD / GEORADIUS / GEODIST | XADD / XREAD / XGROUP / XACK |
+| **典型操作复杂度** | O(1) | O(1) 两端 / O(N) 中间 | O(1) 单字段 | O(1) 单元素 / O(N) 求交 | O(log N) | O(1) 单位 | O(1) | O(log N) | O(1) 添加 |
+| **典型大小（编码切换）** | - | 128 / 64B | 128 / 64B | intset 512 / listpack 128 | listpack 128 / 64B | - | - | - | - |
+| **节省内存** | 中 | listpack 极省 | listpack 极省 | intset 极省 | listpack 中 | **极省**（10w 用户 12KB）| **极省**（12KB / key）| 中 | 中 |
+| **使用频次** | **极高**（90% 业务）| 高 | **极高** | 高 | **极高** | 中 | 中 | 中 | 中（5.0+）|
+| **典型业务** | 缓存 / 计数 / 锁 / Session | 消息队列 / Feed 流 | 用户对象 / 配置 | 标签 / 好友 / 抽奖 | 排行榜 / 延迟队列 | 签到 / 活跃统计 | UV 估算 | 附近的人 | IM / 事件流 |
+| **持久化** | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF | RDB+AOF |
+| **过期粒度** | key 级 | key 级 | key 级（**不支持 field 级**）| key 级 | key 级 | key 级 | key 级 | key 级 | key 级 |
+| **范围查询** | ❌ | ✅ LRANGE | ❌ | ❌ | **✅ ZRANGEBYSCORE 强大** | BITCOUNT 区间 | ❌ | ✅ GEORADIUS | ✅ XRANGE |
+| **去重** | - | ❌（自己控制）| field 级 | ✅ 天然 | ✅ 天然 + 排序 | - | ✅ 估算 | ✅ | - |
+| **并发安全** | INCR 原子 | LPUSH/BRPOP 原子 | HSET 原子 | SADD 原子 | ZADD 原子 | SETBIT 原子 | PFADD 原子 | GEOADD 原子 | XADD 原子 |
+| **典型 OOM 风险** | 大 Value | 长 List | 大 Hash | 大 Set | 大 ZSet | 极大 Bitmap | 几乎无 | 大 Geo | 长 Stream |
+| **跨节点（Cluster）支持** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### 编码切换条件（必背）
+
+| 类型 | 紧凑编码 | 切换条件 | 大编码 |
+| --- | --- | --- | --- |
+| **String** | int / embstr（< 44B）| value > 44B | raw（SDS）|
+| **List** | listpack | 元素 > 128 个 / 单元素 > 64B | quicklist（listpack 链表）|
+| **Hash** | listpack | 字段 > 128 / 单值 > 64B | hashtable |
+| **Set（整数）** | intset | 元素 > 512 / 非整数 | hashtable |
+| **Set（字符串）** | listpack（7.2+）| 元素 > 128 / 单元素 > 64B | hashtable |
+| **ZSet** | listpack | 元素 > 128 / 单元素 > 64B | skiplist + hashtable |
+
+**切换不可逆**：从紧凑升到大编码后，即使数据缩小也不回退。
+
+### 协作时序对比（同一业务：排行榜 TOP 10）
+
+```mermaid
+sequenceDiagram
+    participant App as 应用
+    participant String as String
+    participant Hash as Hash
+    participant ZSet as ZSet
+
+    Note over App,ZSet: 用 String（不推荐）
+    App->>String: SET user:1:score 100
+    App->>String: SET user:2:score 200
+    Note over App: 取 TOP 10 → 全表扫描（不可行）
+
+    Note over App,ZSet: 用 Hash（不推荐）
+    App->>Hash: HSET scores user:1 100
+    App->>Hash: HSET scores user:2 200
+    Note over App: 取 TOP 10 → HGETALL 全取 + 应用层排序（O(N log N)）
+
+    Note over App,ZSet: 用 ZSet（推荐）
+    App->>ZSet: ZADD ranking 100 user:1
+    App->>ZSet: ZADD ranking 200 user:2
+    App->>ZSet: ZREVRANGE ranking 0 9 WITHSCORES
+    ZSet-->>App: TOP 10（O(log N + 10)）
+    Note over ZSet: 跳表 + 字典双索引<br/>插入 / 取 TOP N / 区间查询都极快
+```
+
+### 内部编码深度解析
+
+```
+String 三种编码:
+  int:     value 是 long 整数（< 2^63）→ 直接存 int64
+  embstr:  value ≤ 44B → SDS + RedisObject 内嵌一块（一次 malloc）
+  raw:     value > 44B → SDS + RedisObject 分开（两次 malloc）
+
+  SDS（Simple Dynamic String）:
+    struct sdshdr {
+      uint64_t len;     // 当前长度
+      uint64_t alloc;   // 已分配
+      unsigned char flags;
+      char buf[];       // 数据
+    }
+    优势: O(1) 取长度 + 二进制安全 + 杜绝缓冲区溢出 + 预分配
+
+listpack（7.0+ 替代 ziplist）:
+  连续内存 + 每元素 [encoding|length|value] 三段
+  优势:
+    - CPU 缓存友好
+    - 内存极省（无指针开销）
+  劣势:
+    - 修改要重新分配整块
+    - 查找 O(N)
+  → 用于小数据（List / Hash / Set 小集合）
+
+quicklist（List 大编码）:
+  双向链表，每节点是 listpack
+  
+  [listpack1] ←→ [listpack2] ←→ [listpack3]
+  
+  优势: 大 List 性能 + 内存平衡
+  默认: 每 listpack 8KB
+
+hashtable（Set / Hash 大编码）:
+  开链 + 渐进式 rehash（拆分到多次操作）
+  
+  ht[0]: 老表
+  ht[1]: 新表（rehash 时创建）
+  rehashidx: 当前迁移位置
+  
+  → 不会一次性阻塞主线程
+
+skiplist（ZSet 大编码）:
+  跳表 = 多层有序链表
+  查询 / 插入 / 删除: O(log N)
+  + 并行用 dict（hashtable）做 member→score 反向查询
+  
+  优势:
+    - 范围查询极快（ZRANGEBYSCORE）
+    - 实现简单 vs 红黑树
+  
+  注意: 跳表层数随机生成（1/4 概率升层）
+
+intset（小 Set 整数集合）:
+  有序 int 数组，二分查找 O(log N)
+  自动升级 int16 → int32 → int64
+  全是整数才用，混入字符串立即升 hashtable
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 String** | 缓存 / 分布式锁 / 计数器失去最通用方案 |
+| **没 List** | 消息队列 / 时间轴失去原生队列结构 |
+| **没 Hash** | 对象存储退化为多个 key（key 数量爆炸 + 内存浪费）|
+| **没 Set** | 标签 / 共同关注退化为应用层求交集（O(N²)）|
+| **没 ZSet** | 排行榜 / 延迟队列失去 O(log N) 方案 |
+| **没 Bitmap** | 签到 / 活跃统计内存暴涨（10w 用户 12KB vs 几 MB）|
+| **没 HLL** | 亿级 UV 估算无原生方案（精确去重存不下）|
+| **没 Geo** | 附近的人退化为 SQL 全表扫 |
+| **没 Stream** | 持久化消息队列退化为 List（无消费者组 / 无 ACK）|
+
+### 内存对比（10 万用户的不同存储方式）
+
+```
+用 String 存对象（每用户 3 字段）:
+  user:1:name → "alice"
+  user:1:age → "25"
+  user:1:email → "..."
+  10w × 3 key × ~100B = 30MB
+
+用 Hash 存对象（HSET user:1 name alice age 25 ...）:
+  10w × 1 key × ~150B = 15MB（节省 50%）
+  → 用 Hash 更省 key 空间
+
+用 Set 存标签（10w 用户每人 10 标签）:
+  intset 全整数: ~100MB
+  hashtable: ~300MB
+  → 整数 ID 用 intset 节省 3x
+
+用 Bitmap 存签到（10w 用户 365 天）:
+  Bitmap: 10w × 365 bit = 4.5 MB
+  Hash:   10w × 365 key × ~30B = 1 GB
+  → Bitmap 节省 200x
+
+用 HLL 存 UV（1 亿 UV 估算）:
+  HLL:    12 KB（固定）
+  Set:    1 亿 × ~50B = 5 GB
+  → HLL 节省 40w 倍（牺牲 0.81% 精度）
+```
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{业务场景?}
+
+    Q1 -->|单值 / 计数 / 锁 / 缓存| Str[String]
+    Q1 -->|消息队列 / Feed / 最近 N 条| L[List]
+    Q1 -->|对象存储 / 多字段| H[Hash]
+    Q1 -->|无序唯一 / 标签 / 关注| S[Set]
+    Q1 -->|排行榜 / 延迟队列 / 范围查| Z[ZSet]
+    Q1 -->|签到 / 活跃统计| BM[Bitmap]
+    Q1 -->|UV 估算 / 去重计数| HLL[HyperLogLog]
+    Q1 -->|附近的人 / 配送| G[Geo]
+    Q1 -->|持久化消息队列 / IM| St[Stream]
+
+    style Z fill:#9f9
+    style H fill:#9ff
+    style Str fill:#ff9
+```
+
+**实战推荐表**：
+
+| 业务 | 推荐 | 备注 |
+| --- | --- | --- |
+| 验证码 / Token | **String** + TTL | INCR 防刷 |
+| 用户对象（id → name/age/email）| **Hash** | 节省 key 空间 |
+| 点赞 / 收藏列表 | **Set** | SADD 去重 |
+| 共同关注（双方好友）| **Set** + SINTER | 求交集 |
+| 排行榜 TOP N | **ZSet** + ZREVRANGE | O(log N + N) |
+| 延迟队列（按时间）| **ZSet** with timestamp score | ZRANGEBYSCORE 取到期 |
+| 签到统计（连续 30 天）| **Bitmap** + BITCOUNT | 内存极省 |
+| 大 V 文章 UV（亿级）| **HLL** | 0.81% 误差 |
+| 外卖配送范围 | **Geo** + GEORADIUS | 内置经纬度 |
+| 业务消息流 | **Stream** | 消费者组 + ACK |
+| 最近 50 条动态 | **List** + LTRIM 0 49 | 自动裁剪 |
+| 全局 ID 生成 | **String** + INCR | 原子递增 |
+
+### 反模式（生产不要踩）
+
+```
+❌ 大 Hash / 大 Set / 大 ZSet（单 key > 10MB）→ 阻塞主线程 + 迁移慢
+❌ String 存 JSON 大对象 → 反序列化开销 + 不能局部更新（用 Hash 代替）
+❌ List 当队列但没 ACK 机制 → 消费失败丢消息（用 Stream）
+❌ Set 求交集 SINTER 大集合（百万级）→ 阻塞主线程
+❌ ZSet 用作排行榜但元素数 > 100w → 内存爆 + 慢
+❌ Bitmap 但用户 ID 不连续 / 稀疏 → 浪费空间（用 HLL）
+❌ HLL 用于精确计数 → 0.81% 误差，金融场景不能用
+❌ Hash 期望字段级过期 → Redis 不支持（key 级 TTL 才有）
+❌ Cluster 模式下用 SINTER 跨 key → 需 hash tag 强制同 slot
+❌ Stream 无限增长不清理 → 内存爆（用 XTRIM）
+```
+
+### 一句话总结（D 模板专属）
+
+> 9 大 Redis 数据结构的核心是 **"业务场景驱动选择 + 编码自动切换"**：
+> **5 经典**（String / List / Hash / Set / ZSet）覆盖 90% 业务，**4 进阶**（Bitmap / HLL / Geo / Stream）解决特殊场景。
+> **缺一不可**：String 通用 / Hash 对象 / Set 去重 / ZSet 排序 / List 队列 / Bitmap 签到 / HLL 去重估算 / Geo 地理 / Stream 持久化消息流。
+> **内存优势**：Bitmap 比 Hash 节省 200x（签到）/ HLL 比 Set 节省 40w 倍（UV）/ Hash 比 String 节省 50%（对象）。
+> **关键事实**：类型 = 编码无关，**Redis 自动按数据量切换编码**（listpack → quicklist / hashtable / skiplist）。
+
+---
+
 ## 〇、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）
