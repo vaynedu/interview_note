@@ -2,6 +2,186 @@
 
 > ZK / Eureka / Nacos / etcd / Consul 对比 / 心跳机制 / 健康检查 / 客户端发现 vs 服务端发现 / CAP 取舍
 
+## 〇、多概念对比：5 大注册中心（D 模板）
+
+### 一句话定位
+
+| 注册中心 | 一句话定位 |
+| --- | --- |
+| **ZooKeeper** | **CP 老牌**（ZAB 协议），强一致 + 临时节点 + Watch，**Hadoop 生态原生**，性能中等 |
+| **Eureka** | **Netflix 出品的 AP**，自我保护机制，简单但**已停止主要开发**（2.x 闭源）|
+| **Nacos** | **阿里出品的 AP/CP 双模式**，配置中心 + 注册中心**二合一**，国内主流 |
+| **etcd** | **CP（Raft）**，K8s 生态原生，**v3 性能优秀**，云原生标配 |
+| **Consul** | **CP（Raft）+ 健康检查丰富**，HashiCorp 出品，多数据中心原生支持 |
+
+### 多维度对比（16 维度，必背）
+
+| 维度 | ZooKeeper | Eureka | Nacos | etcd | Consul |
+| --- | --- | --- | --- | --- | --- |
+| **出品方** | Apache（Yahoo）| Netflix（停止主开发）| 阿里 | CoreOS → CNCF | HashiCorp |
+| **CAP** | **CP** | **AP** | **AP / CP 可切换** | **CP** | **CP** |
+| **共识协议** | ZAB（类 Paxos）| 无（节点 P2P 同步）| Raft（CP 时）/ Distro（AP 时）| Raft | Raft |
+| **健康检查** | 临时节点（Session）| Client 心跳（30s）| 心跳 + TCP/HTTP/MySQL 主动探测 | Lease 续约 | **多种**（TCP/HTTP/gRPC/脚本）|
+| **数据模型** | 树形节点 | 服务 + 实例 | 服务 + 实例 + 配置 | KV（v3）| KV + 服务目录 |
+| **配置中心** | 弱（节点存储）| ❌ | ✅ **二合一** | 弱（KV 存储）| ✅ |
+| **多数据中心** | 弱 | 弱 | ✅ | 弱 | ✅ **原生支持** |
+| **性能（写）** | ~万级 QPS | 高（弱一致）| **5w+ QPS**（AP 模式）| **1-2w QPS** | 1w QPS |
+| **性能（读）** | 5w+ | 高 | 高 | 10w+ | 高 |
+| **客户端 Go 支持** | go-zookeeper（弱）| 无好的 Go 客户端 | nacos-sdk-go | clientv3（**官方推荐**）| consul/api |
+| **特色功能** | Watch + 临时顺序节点 | 自我保护模式 | 配置 + 注册 + DNS + 服务治理 | gRPC API + Lease + Watch | 多 DC + ACL + 健康检查 |
+| **K8s 集成** | 弱（外挂）| 弱 | 中 | ✅ **原生（K8s 自用）** | 弱 |
+| **国内活跃度** | 中（老牌）| 低（停更）| **极高**（Spring Cloud Alibaba）| 高（云原生）| 中 |
+| **代表用户** | Hadoop / Kafka（早期）| Netflix / Spring Cloud（早期）| 阿里 / 滴滴 / 美团 | K8s / TiDB / CoreOS | HashiCorp 生态 |
+| **典型部署** | 3/5 节点 | 集群 P2P | 3 节点 | 3/5 节点 | 3/5 节点 |
+| **学习曲线** | 中 | 低 | 低 | 中 | 中 |
+
+### 协作时序对比（服务注册 → 发现 → 调用）
+
+```mermaid
+sequenceDiagram
+    participant S as Service A（提供方）
+    participant R as 注册中心
+    participant C as Service B（消费方）
+
+    Note over S,C: ZooKeeper（CP + 临时节点）
+    S->>R: 创建临时节点 /services/a/instance-1
+    R->>R: 同步到多数派（ZAB）
+    C->>R: Watch /services/a/*
+    R-->>C: 推送节点列表
+    Note over S,R: 心跳维持 Session
+    S--xR: Session 超时（断开 30s）→ 临时节点自动删除
+    R-->>C: 推送变更
+
+    Note over S,C: Eureka（AP + 心跳）
+    S->>R: POST /register
+    R->>R: 多节点 P2P 异步同步（弱一致）
+    C->>R: GET /apps（拉模式，30s）
+    R-->>C: 返回服务列表
+    Note over S,R: 30s 一次心跳
+    S--xR: 90s 没心跳 → 标记 DOWN
+    Note over R: 大量心跳丢失 → 触发自我保护
+
+    Note over S,C: Nacos（AP 默认 / CP 可选）
+    S->>R: POST /v1/ns/instance
+    R->>R: AP: Distro 协议同步 / CP: Raft 同步
+    C->>R: 订阅 + UDP 推送
+    R-->>C: 实时推送变更
+
+    Note over S,C: etcd（CP + Lease）
+    S->>R: Put with Lease (TTL 5s)
+    R->>R: Raft 多数派确认
+    S->>R: KeepAlive Lease
+    C->>R: Watch /services/a/
+    R-->>C: 推送事件
+    S--xR: 客户端崩溃 → Lease 过期 → key 自动删
+    R-->>C: 推送 DELETE 事件
+```
+
+### 缺一不可分析
+
+| 假设 | 后果 |
+| --- | --- |
+| **没 ZooKeeper** | 大数据生态（Kafka 旧版 / HBase / Hadoop）失去元数据协调 |
+| **没 Eureka** | Spring Cloud 早期生态没注册中心（现在已被 Nacos 替代）|
+| **没 Nacos** | 国内 Spring Cloud Alibaba 失去**配置 + 注册一体化**最佳方案 |
+| **没 etcd** | K8s / TiDB / CoreOS 失去**云原生协调存储**事实标准 |
+| **没 Consul** | 多数据中心 + ACL 严格场景失去最佳实践 |
+
+### CAP 选择深度对比
+
+```
+CP 注册中心（ZK / etcd / Consul）:
+  特征: 写多数派同步 / 分区时少数派不可用 / 数据强一致
+  优势: 服务列表准确 / 配置中心场景适合
+  劣势: 性能受 Raft 限制 / 分区时部分服务不可见
+
+AP 注册中心（Eureka / Nacos AP）:
+  特征: 节点异步同步 / 任一节点都可读写 / 分区时可用
+  优势: 高可用（注册中心挂不影响调用）/ 写性能高
+  劣势: 数据可能不一致 / 配置中心不适合
+
+业内共识:
+  服务注册 → AP（短暂不一致 OK）
+  配置中心 → CP（不能容忍不一致）
+  → Nacos 双模式是最佳实践
+```
+
+### Eureka 自我保护机制（独有特色）
+
+```
+触发条件:
+  上一分钟心跳数 < 期望的 85% → 触发自我保护
+
+行为:
+  不再剔除"看起来已下线"的节点
+  → 防止网络抖动导致大面积误剔除
+
+权衡:
+  ✓ 网络分区时不误剔除好节点
+  ✗ 真正下线的节点也不会被剔除 → 调用可能失败
+
+业内评价:
+  自我保护"保护过度"，实际生产体验一般
+  → Nacos / etcd 没有这个机制（用更准的健康检查）
+```
+
+### 怎么选（决策树）
+
+```mermaid
+flowchart TD
+    Q1{技术栈?}
+
+    Q1 -->|K8s / 云原生| etcd
+    Q1 -->|Spring Cloud Alibaba / 国内| Nacos
+    Q1 -->|HashiCorp 全家桶 / 多数据中心| Consul
+    Q1 -->|大数据生态 / 老项目| Q2
+    Q1 -->|Java + 老 Spring Cloud| Q3
+
+    Q2{Kafka 版本?}
+    Q2 -->|老版 < 2.8| ZK
+    Q2 -->|新版 KRaft| etcd2[内置 / 无需 ZK]
+
+    Q3{愿意维护 Eureka?}
+    Q3 -->|否（推荐）| Nacos2[换 Nacos]
+    Q3 -->|是| Eureka
+
+    style Nacos fill:#9f9
+    style etcd fill:#9ff
+    style Consul fill:#ff9
+```
+
+**实战推荐**：
+
+| 场景 | 推荐 | 备注 |
+| --- | --- | --- |
+| K8s 微服务 | **etcd**（K8s 自用）| 用 K8s API 就够 |
+| Spring Cloud Alibaba | **Nacos** | 国内最活跃 |
+| 多数据中心 + ACL | **Consul** | 原生 DC 支持 |
+| 老 Kafka / HBase | **ZooKeeper** | 历史包袱 |
+| 新 Kafka 2.8+ | **KRaft 内置** | 无需 ZK |
+| 老 Spring Cloud | **建议迁移到 Nacos** | Eureka 停更 |
+
+### 反模式
+
+```
+❌ 服务注册用 ZK 但以为是 AP → 网络抖动导致服务列表大面积下线
+❌ 用 Eureka 做配置中心 → 弱一致导致配置不同步
+❌ etcd 集群部署 < 3 节点 → 任一挂掉 = 集群挂
+❌ Nacos 单机部署用于生产 → 单点故障
+❌ 心跳间隔太长（≥ 30s）→ 服务下线感知慢
+❌ 心跳间隔太短（< 5s）→ 注册中心压力大
+```
+
+### 一句话总结（D 模板专属）
+
+> 5 大注册中心的核心是 **"CAP 选择 + 生态绑定"**：
+> **CP 阵营**（ZK / etcd / Consul）强一致适合配置 + 元数据，**AP 阵营**（Eureka / Nacos）高可用适合服务注册。
+> **Nacos 双模式**（AP/CP 可切换）是国内最佳实践，**etcd 是云原生标配**（K8s 自用），**Consul 多 DC 原生**。
+> **缺一不可**：ZK 大数据、etcd 云原生、Nacos 国内 SCA、Consul 多 DC、Eureka 已成历史。
+> **业内现状**：80% 国内 Java 用 Nacos，云原生 / Go 服务用 etcd，多数据中心选 Consul。
+
+---
+
 ## 一、为什么需要注册中心
 
 ### 1.1 没有注册中心的世界
