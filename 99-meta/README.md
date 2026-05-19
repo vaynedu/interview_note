@@ -33,6 +33,9 @@
 | 文件 | 内容 |
 | --- | --- |
 | [00-interview-question-index.md](00-interview-question-index.md) | 高频面试题全局索引（按问题跳转） |
+| [01-cross-topic-index.md](01-cross-topic-index.md) | 跨主题索引（同一概念在多领域出现）|
+| [capacity-numbers.md](capacity-numbers.md) | **实战数据速查**（容量估算 / 单机能力 / 红线阈值）⭐ |
+| [wrong-answers.md](wrong-answers.md) | 错题本 |
 
 ## 使用方式
 
