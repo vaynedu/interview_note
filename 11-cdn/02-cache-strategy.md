@@ -189,6 +189,82 @@ sequenceDiagram
 
 **304 的收益**：只回 header，不回 body，节省带宽。
 
+### 3.6 四字段协同 + 决策权归属（高频考点）★
+
+> 真实场景里 `Cache-Control` / `Expires` / `ETag` / `Last-Modified` **经常一起出现**，但它们不在同一层级。
+> 看清"**两层串联 + 各层内部优先级**"，就不再混乱。
+
+#### 两层缓存模型
+
+```
+┌─────────────────────────────────────────────┐
+│ 第 1 层：强缓存（不发请求，本地直接用）       │
+│   Cache-Control  >  Expires                 │
+└─────────────────────────────────────────────┘
+                ↓ 强缓存过期 / no-cache
+┌─────────────────────────────────────────────┐
+│ 第 2 层：协商缓存（发请求验证，304 / 200）    │
+│   ETag (If-None-Match)  >  Last-Modified    │
+│                          (If-Modified-Since)│
+└─────────────────────────────────────────────┘
+                ↓ 服务端判变了
+            返回 200 + 新内容
+```
+
+**两条核心规则**：
+- **强缓存层**：`Cache-Control` 完全压制 `Expires`（HTTP/1.1 vs 1.0，前者无时钟问题）
+- **协商缓存层**：`ETag` 优先于 `Last-Modified`（RFC 7232：服务端必须先看 If-None-Match）
+
+#### 服务端判定伪代码
+
+```python
+def handle_request(req):
+    # 协商缓存：ETag 优先，且只有 ETag 命中才看 Last-Modified
+    if req.headers.get('If-None-Match'):
+        if req.headers['If-None-Match'] == compute_etag(resource):
+            return 304
+        else:
+            return 200 + new_content   # ETag 不一致，直接全量传
+
+    # 没 ETag 才退到 Last-Modified
+    ims = req.headers.get('If-Modified-Since')
+    if ims and ims >= resource.mtime:
+        return 304
+
+    return 200 + new_content
+```
+
+#### 决策权归属（关键认知，常被搞反）★
+
+> **CDN 缓存策略主要由源站响应头决定，不是浏览器请求决定的。**
+
+| 控制目标 | 由谁决定 | 通过什么 |
+| --- | --- | --- |
+| **CDN 边缘节点存多久** | 🟢 **源站响应头** | `Cache-Control: s-maxage` 或 `max-age` |
+| **CDN 是否能缓存** | 🟢 **源站响应头** | `private` / `public` / `no-store` |
+| **浏览器本地存多久** | 🟢 **源站响应头** | `Cache-Control: max-age` |
+| **本次请求是否用缓存** | 🟡 **浏览器请求头**（临时）| F5 自动加 `Cache-Control: no-cache` / `max-age=0` |
+| **CDN 主动失效** | 🔴 **CDN 控制台 / API** | purge 接口 |
+
+**Cache-Control 的双向性**：
+- **响应头方向（90% 场景）**：源站说"你们应该怎么缓存我"——决定长期策略
+- **请求头方向（10% 场景）**：浏览器说"这次请求我希望你怎么处理"——只影响这一次（如 F5 强制走协商）
+
+#### 生产推荐组合
+
+| 场景 | Cache-Control | ETag | Last-Modified | 备注 |
+| --- | --- | --- | --- | --- |
+| **静态资源（带 hash 文件名）** | `public, max-age=31536000, immutable` | ✅ 兜底 | ❌ 不需要 | hash 文件名永不重名，1 年缓存 |
+| **HTML / 动态可缓存内容** | `public, max-age=0, must-revalidate` | ✅ 主验证 | ✅ 兜底 | 每次都协商验证 |
+| **用户私有数据 / API** | `private, no-cache` | ✅ | ❌ | CDN 不缓存 |
+| **敏感数据（支付 / 登录）** | `no-store` | ❌ 不要带 | ❌ 不要带 | 完全不缓存，带 ETag 反而误导中间代理 |
+
+#### 一句话总结
+
+> **强缓存先决定"要不要发请求"（`Cache-Control` 压 `Expires`），协商缓存再决定"要不要传内容"（`ETag` 压 `Last-Modified`）。**
+> 生产推荐 **`Cache-Control + ETag` 双字段组合**：`Last-Modified` 是兜底（旧客户端 / 没 ETag 的 fallback），`Expires` 已是历史遗留可不发。
+> **关键认知**：CDN 缓存策略**主要由源站响应头决定**，不是浏览器请求决定的；浏览器请求头里的 Cache-Control 只能临时影响"本次"，不能改变 CDN 长期存储规则。
+
 ## 四、缓存键设计（CDN 核心）
 
 ### 4.1 默认缓存键
