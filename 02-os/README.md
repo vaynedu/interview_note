@@ -26,6 +26,7 @@
 | [17-network-troubleshooting.md](17-network-troubleshooting.md) | 网络故障排查：DNS、建连、TLS、重传、连接池、端口耗尽 |
 | [18-disk-io-troubleshooting.md](18-disk-io-troubleshooting.md) | 磁盘 IO 排查：df、inode、iostat、deleted 文件、fsync、Page Cache |
 | [19-container-k8s-resource.md](19-container-k8s-resource.md) | 容器/K8s 资源：OOMKilled、CPU throttling、request/limit、探针 |
+| [20-linux-cmd-cheatsheet.md](20-linux-cmd-cheatsheet.md) | **Linux 排查命令速查**：USE 矩阵 + 30+ 命令字段精解 + 7 大组合套路 ⭐ |
 
 ## 高频题速览
 
