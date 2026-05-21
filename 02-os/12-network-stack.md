@@ -191,7 +191,165 @@ defer resp.Body.Close()
 - 只看服务端耗时，不看 DNS、建连、TLS、网络 RTT。
 - CLOSE_WAIT 多还以为是系统参数问题。
 
-## 八、面试表达
+## 八、字节序(大小端)
+
+> 网络协议是大端,服务端 CPU 几乎都是小端 —— 中间必须做转换。
+> 这是底层网络通信最基础也最容易踩的坑。
+
+### 8.1 大小端定义
+
+**字节序**:多字节数据在内存里**字节的排列顺序**。
+
+例:32 位整数 `0x12345678` 存到内存地址 `0x1000` 起:
+
+```
+              0x1000  0x1001  0x1002  0x1003
+大端 (Big):    12      34      56      78       ← 高位在前
+小端 (Little): 78      56      34      12       ← 低位在前
+```
+
+| | 大端 Big-Endian | 小端 Little-Endian |
+| --- | --- | --- |
+| 高位字节 | 放低地址 | 放高地址 |
+| 直观性 | 和人读写一致 | 反着的 |
+| 运算友好 | 差 | 好(加法从低位开始,顺读) |
+| 典型代表 | **网络协议 / Java / PowerPC** | **x86 / ARM64 / RISC-V** |
+
+口诀:**大端像人读数,小端像机器算数**。
+
+### 8.2 网络字节序 = 大端
+
+**RFC 1700 规定:网络协议传输用大端**(Big-Endian),又叫 **Network Byte Order (NBO)**。
+
+涉及字段:
+- **IP 头**:源 IP / 目的 IP / 总长度 / TTL
+- **TCP 头**:端口号 / 序列号 / 确认号 / 窗口大小
+- **UDP 头**:端口号 / 长度
+
+```
+TCP 端口 80 (0x0050) 在网线上传输:
+   字节1   字节2
+    00     50          ← 大端,高位先发
+```
+
+**为什么选大端**:
+1. 历史路径依赖(早期网络设备 IBM/SUN/Motorola 都是大端)
+2. 抓包工具按字节顺序展示就是人类读法,调试方便
+3. 早期硬件可以读第一字节就预判包大小
+
+### 8.3 服务端硬件 = 几乎全是小端
+
+| 平台 | 字节序 | 服务端占比 |
+| --- | --- | --- |
+| x86 / x86_64 (Intel / AMD) | 小端 | 95%+ |
+| ARM64 (鲲鹏 / 飞腾 / Graviton / Apple Silicon) | 小端(默认) | 增长中 |
+| PowerPC / SPARC | 大端 | 已边缘化 |
+
+**结论**:服务端 CPU **几乎 100% 小端**,网络传输是大端 → 应用层**必须做字节序转换**。
+
+### 8.4 字节序转换 API
+
+**C / Linux**:
+
+```c
+#include <arpa/inet.h>
+
+htons()   // host to network short  (16位,如端口号)
+htonl()   // host to network long   (32位,如 IP)
+ntohs()   // network to host short
+ntohl()   // network to host long
+
+uint16_t port = 8080;
+uint16_t net_port = htons(port);  // 发送前转大端
+send(fd, &net_port, 2, 0);
+```
+
+x86 上 `htons` 实际就是字节翻转;大端机上是 no-op。
+
+**Go**(显式指定,不依赖隐式假设):
+
+```go
+import "encoding/binary"
+
+// 写入网络(大端)
+buf := make([]byte, 4)
+binary.BigEndian.PutUint32(buf, 0x12345678)
+// buf = [0x12, 0x34, 0x56, 0x78]
+
+// 从网络读取
+val := binary.BigEndian.Uint32(buf)
+
+// 本地存储 / 私有协议常用小端(性能略好)
+binary.LittleEndian.PutUint32(buf, 0x12345678)
+// buf = [0x78, 0x56, 0x34, 0x12]
+```
+
+### 8.5 检测当前机器字节序
+
+```bash
+# Linux 命令行
+lscpu | grep "Byte Order"
+# Byte Order: Little Endian
+```
+
+```go
+// Go
+func nativeEndian() binary.ByteOrder {
+    var i uint16 = 1
+    if *(*byte)(unsafe.Pointer(&i)) == 1 {
+        return binary.LittleEndian
+    }
+    return binary.BigEndian
+}
+```
+
+### 8.6 生产中的字节序坑
+
+**坑 1:跨语言通信忘转字节序**
+
+```
+Go 服务(小端)直接 binary.LittleEndian 编码 → 发给 Java 服务
+Java 默认大端解 → 数值全乱
+```
+
+修复:私有协议必须**文档显式约定字节序**,推荐用 protobuf / msgpack 等已封装好的序列化框架。
+
+**坑 2:Redis / 数据库存二进制 key 跨架构不一致**
+
+```go
+// 小端机
+binary.LittleEndian.PutUint64(key, userID)
+redis.Set(key, val)
+// 跨架构的大端机用同一 userID 编码出来的 key 完全不同 → miss
+```
+
+修复:统一用大端,或显式转字符串。
+
+**坑 3:抓包看到的别按本地字节序解**
+
+```
+tcpdump 抓到 TCP 端口字段: 1F 90
+错解(按小端) = 0x901F = 36895  ❌
+正解(网络大端) = 0x1F90 = 8080  ✅
+```
+
+**坑 4:C 里结构体直接 send**
+
+```c
+struct Header { uint16_t port; uint32_t seq; };
+send(fd, &header, sizeof(header), 0);  // ❌ 不同机器解析不一致
+// 还有内存对齐 padding 问题
+```
+
+修复:每个字段单独 htons/htonl,或用序列化框架。
+
+### 8.7 一句话总结
+
+> **网络字节序 = 大端**(RFC 规定,TCP/IP 协议头都是);**服务端 CPU 几乎都是小端**(x86 / ARM64);
+> → **应用层必须做转换**(C 用 `htons/htonl`,Go 用 `binary.BigEndian`);
+> 选小端是 CPU 运算友好,选大端是协议互通和可读性。**两边各取所需,中间靠字节序转换桥接**。
+
+## 九、面试表达
 
 ```text
 网络问题我会先拆请求链路：DNS、建连、TLS、发送、服务端处理、响应和连接复用。
