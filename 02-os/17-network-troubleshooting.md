@@ -56,7 +56,176 @@ https://example.com
 - `time_starttransfer`：首字节时间。
 - `time_total`：总耗时。
 
-## 三、场景 1：接口偶发超时
+## 三、主动检测网络质量
+
+> 前两章解决"出问题后怎么查"，这一章解决"平时怎么主动评估一条链路好不好"。
+> 思路是先盯**四大指标**，再用对应工具量化。
+
+### 3.1 四大核心指标
+
+| 指标 | 含义 | 红线参考 | 对业务影响 |
+| --- | --- | --- | --- |
+| **延迟 RTT** | 包往返时间 | 同城 <5ms / 跨地域 <50ms / 跨国 <200ms | RPC、TLS 握手 |
+| **抖动 Jitter** | 延迟标准差 | <10ms 稳 / >30ms 差 | 视频、实时音视频、游戏 |
+| **丢包率** | 丢弃包占比 | <0.1% 正常 / >1% 异常 / >5% 严重 | TCP 重传、吞吐崩塌 |
+| **带宽 / 吞吐** | 单位时间数据量 | 看链路标称（千兆要测到 940Mbps+）| 大文件、备份、流媒体 |
+
+附加：**MTU**（影响分片）、**PPS**（小包场景看包率而非带宽）、**端口连通性**。
+
+### 3.2 延迟 + 丢包：`ping` / `mtr`
+
+```bash
+# 快速看延迟稳不稳
+ping -c 100 -i 0.1 8.8.8.8
+# 关键字段:
+#   rtt min/avg/max/mdev = 0.5/1.2/3.8/0.4 ms
+#                                  ^抖动 (mdev)
+#   packet loss = 0%
+
+# mtr = ping + traceroute 合体（强烈推荐）
+mtr -rwzbc 100 8.8.8.8
+#   -r report 模式  -w 宽输出  -z 显示 ASN
+#   -b 显示 IP    -c 100 发 100 个包
+# 每跳输出: Loss% / Snt / Last / Avg / Best / Wrst / StDev
+# 能定位"丢包发生在哪一跳"
+```
+
+**mtr 是跨网络排查神器**：能区分丢包是自己出口、运营商骨干，还是对端入口。
+
+### 3.3 路径分析：`traceroute` / `tcptraceroute`
+
+```bash
+traceroute 8.8.8.8           # ICMP/UDP 默认，可能被防火墙挡
+traceroute -T -p 443 host    # TCP SYN，穿透防火墙更准
+tcptraceroute host 443       # 同上，更直观
+```
+
+ICMP 通不代表 TCP 通——业务端口必须用 TCP 探测。
+
+### 3.4 带宽 / 吞吐：`iperf3`（业界标准）
+
+```bash
+# 服务端
+iperf3 -s
+
+# 客户端 TCP（多流压满带宽）
+iperf3 -c <server> -t 30 -P 8
+#   -t 30 持续 30 秒  -P 8 并发 8 个流
+
+# UDP 测抖动 + 丢包（限速)
+iperf3 -c <server> -u -b 100M -t 30
+```
+
+典型输出：`[SUM] 0-30 sec  3.3 GBytes  942 Mbits/sec  retr=0` ← 千兆达标。
+
+### 3.5 TCP 层连通 + 时延：`tcping` / `hping3` / `nc`
+
+```bash
+# 测端口通 + TCP 握手延迟（最贴近业务）
+tcping example.com 443
+
+# hping3 模拟 SYN 探测
+hping3 -S -p 443 -c 100 example.com
+
+# 端口连通快速检查
+nc -zv example.com 443
+```
+
+业务延迟应该看 **TCP 握手时间**，比 ICMP ping 更真实。
+
+### 3.6 网卡层面:`ethtool` / `ip -s link`
+
+```bash
+ethtool eth0                          # 协商速率、双工模式
+ethtool -S eth0 | grep -E "drop|error|fifo"
+# 关键计数:
+#   rx_dropped / tx_dropped: 网卡丢包
+#   rx_crc_errors:          物理层错误
+#   rx_fifo_errors:          ring buffer 满
+
+ip -s link show eth0                  # 收发包/错误/丢包计数
+```
+
+网卡有 errors / drops → 物理层、驱动或 ring buffer 不足。
+
+### 3.7 长期监控:`smokeping` / 自建 mtr
+
+```bash
+# 简易后台周期 mtr
+while true; do
+  mtr -rwzbc 60 target >> mtr.log
+  sleep 60
+done
+
+# 生产推荐: smokeping 图形化记录丢包+延迟历史
+# 或 prometheus blackbox_exporter + grafana
+```
+
+### 3.8 一键体检脚本
+
+```bash
+TARGET=${1:-8.8.8.8}
+
+echo "=== 1. 连通性 + 延迟 ==="
+ping -c 20 -i 0.1 $TARGET | tail -3
+
+echo "=== 2. 路径 + 丢包 ==="
+mtr -rwzbc 50 $TARGET
+
+echo "=== 3. DNS 解析时延 ==="
+dig $TARGET +stats | grep "Query time"
+
+echo "=== 4. TCP 握手 + 首字节 ==="
+for i in 1 2 3; do
+  curl -o /dev/null -s -w \
+    "握手:%{time_connect}s 首字节:%{time_starttransfer}s 总耗时:%{time_total}s\n" \
+    https://$TARGET
+done
+
+echo "=== 5. 网卡错误统计 ==="
+ip -s link show eth0 | grep -A1 "RX:\|TX:"
+ethtool -S eth0 2>/dev/null | grep -E "drop|error" | grep -v ": 0$"
+```
+
+### 3.9 按指标反查工具
+
+| 想知道什么 | 第一手工具 | 次选 |
+| --- | --- | --- |
+| 通不通 | `ping` / `nc -zv` | `tcping` |
+| 延迟多少 | `ping` / `tcping` | `curl -w time_connect` |
+| 抖动大不大 | `ping`(看 mdev) / `mtr`(StDev) | `smokeping` 长跑 |
+| 丢包多少 | `mtr -rwzbc 1000` | `ping -f`(root,洪 ping) |
+| 路径绕不绕 | `mtr` / `traceroute` | `tcptraceroute` |
+| 带宽够不够 | `iperf3 -P 8` | `nload` / `iftop` 实时看 |
+| PPS 多少 | `iperf3 -l 64 -P 16` | `sar -n DEV 1` |
+| TCP 重传率 | `ss -ti` / `netstat -s` | `tcpdump` 抓包 |
+| 网卡有没有错 | `ethtool -S` | `ip -s link` |
+
+### 3.10 主动检测的思维链
+
+```
+1. ping       通不通 + 基础延迟 + 抖动
+   ↓ 不通
+2. mtr        哪一跳开始丢
+   ↓ 通但慢
+3. iperf3     是带宽问题还是延迟问题
+   ↓ 带宽够
+4. ss -ti     TCP 层（cwnd / rtt / retrans）
+   ↓ TCP 正常
+5. ethtool    网卡 / 驱动 / 物理层
+   ↓ 都正常
+6. 应用层    DNS / TLS / 业务逻辑
+```
+
+### 3.11 关键认知
+
+- **ping 通 ≠ 业务通**：ICMP 通但 TCP 端口可能被 ACL 挡 → 用 `tcping`
+- **延迟低 ≠ 质量好**：要看**抖动**（mdev / StDev），抖动大对 RPC / 视频致命
+- **带宽达标 ≠ 业务快**：小包场景看 PPS 不看 bps，TCP 拥塞窗口才是真瓶颈
+- **mtr 看"路径"，iperf3 测"管道粗细"**，互补不替代
+- **单次测不算数**：网络质量看长期分布（P50 / P95 / P99 + 抖动），要持续监控
+
+## 四、场景 1:接口偶发超时
 
 先问：
 
@@ -84,7 +253,7 @@ https://example.com
 - 跨机房 RTT 高。
 - 上游超时时间大于下游，导致请求堆积。
 
-## 四、场景 2：CLOSE_WAIT 很多
+## 五、场景 2：CLOSE_WAIT 很多
 
 含义：
 
@@ -114,7 +283,7 @@ Go 常见原因：
 - 用超时和 context 控制生命周期。
 - code review 关注资源释放。
 
-## 五、场景 3：TIME_WAIT 很多
+## 六、场景 3：TIME_WAIT 很多
 
 常见原因：
 
@@ -140,7 +309,7 @@ ss -antp | grep TIME-WAIT | wc -l
 
 不要一上来就调参数，先看应用是否没有复用连接。
 
-## 六、场景 4：端口耗尽
+## 七、场景 4:端口耗尽
 
 表现：
 
@@ -164,7 +333,7 @@ ss -ant | grep TIME-WAIT | wc -l
 - 增加客户端实例。
 - 调整本地端口范围和 TIME_WAIT 复用策略。
 
-## 七、场景 5：TCP 重传
+## 八、场景 5:TCP 重传
 
 现象：
 
@@ -188,7 +357,7 @@ tcpdump -i eth0 host <ip> and port <port>
 - 下游处理慢导致窗口变小。
 - 容器/宿主机网络栈压力。
 
-## 八、Go HTTP Client 坑
+## 九、Go HTTP Client 坑
 
 推荐做法：
 
@@ -211,12 +380,24 @@ client := &http.Client{
 - 没有读取并关闭 body，连接无法复用。
 - 重试没有幂等和退避。
 
-## 九、面试表达
+## 十、面试表达
 
 ```text
 网络超时我会先拆链路：DNS、建连、TLS、服务端处理、响应和连接池。
 工具上会用 curl -w 看耗时分解，用 dig 看 DNS，用 ss 看连接状态，用 netstat/sar 看重传，用 tcpdump 抓包确认。
 如果 CLOSE_WAIT 多，通常是应用没有关闭连接；TIME_WAIT 多通常是短连接或连接复用不足。
 处理上要设置分层超时、连接池、keepalive、幂等重试和退避，避免慢下游拖垮上游。
+```
+
+主动评估网络质量（接入新机房 / 选 CDN 节点 / 上线前）会盯四大指标：
+
+```text
+延迟 / 抖动 / 丢包 / 带宽
+- ping/mtr 看延迟+抖动+丢包，mtr 还能定位哪一跳出问题
+- iperf3 测带宽（业界标准，多流压满）
+- tcping 测业务端口 TCP 握手延迟，比 ICMP ping 更真实
+- ethtool -S 看网卡丢包/错误（物理层）
+- 长期监控用 smokeping 或 prometheus blackbox_exporter
+关键认知: ping 通不等于业务通，延迟低不等于质量好（要看抖动），单点测不算数（看长期 P99）。
 ```
 
