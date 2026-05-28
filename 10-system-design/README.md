@@ -44,6 +44,7 @@
 | [20-log-search-platform.md](20-log-search-platform.md) | 日志检索平台：日志采集、Kafka、ES、冷热存储、权限 |
 | [21-shopping-cart.md](21-shopping-cart.md) | 购物车系统(京东/淘宝)：Redis Hash 主存、价格库存实时聚合、未登录合并、按店拆单 |
 | [22-red-packet-system.md](22-red-packet-system.md) | 抢红包系统(微信/支付宝)：4S 法样板篇 — 预拆 + LPOP 抢 + MQ 异步入账 + 对账兜底 |
+| [23-id-generator-system-4s.md](23-id-generator-system-4s.md) | **发号器系统(4S 版)**：用 4S 重推分布式 ID 发号器(基础设施样本) — 双 Buffer 号段池 + Snowflake 双模 + 三级降级 + 防业务量泄露；与 [06-distributed/05-id-generation.md](../06-distributed/05-id-generation.md) 形成"系统设计视角 vs 原理深度"对比 |
 
 ## 高频题速览
 
