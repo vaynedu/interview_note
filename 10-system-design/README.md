@@ -9,7 +9,8 @@
 | 文件 | 内容 |
 | --- | --- |
 | [00-question-map.md](00-question-map.md) | 经典系统设计题库地图：按短链、交易、内容、IM、搜索、调度、存储归类 |
-| [01-design-framework.md](01-design-framework.md) | 系统设计答题框架：澄清问题、容量估算、核心链路、瓶颈、取舍 |
+| [01-design-framework.md](01-design-framework.md) | 系统设计答题框架：澄清问题、容量估算、核心链路、瓶颈、取舍（10 步通用流程） |
+| [01b-4s-method.md](01b-4s-method.md) | **4S 分析法**（Scenario / Service / Storage / Scale）：面试白板答题标准模板 + 秒杀完整案例 + 与 03-seckill 对比 |
 | [07-interview-answer-playbook.md](07-interview-answer-playbook.md) | 系统设计面试回答方法论：开场、推进、取舍、追问、资深表达 |
 
 ### 高频业务系统
@@ -17,16 +18,23 @@
 | 文件 | 内容 |
 | --- | --- |
 | [02-short-code-platform.md](02-short-code-platform.md) | 短码 / 短链平台：发号、跳转、缓存、统计、防滥用 |
+| [02b-short-code-platform-4s.md](02b-short-code-platform-4s.md) | **短链平台(4S 版)**：用 4S 重推短链(读型样本) + 与 02 旧版对比 |
 | [03-seckill-system.md](03-seckill-system.md) | 秒杀系统：削峰、库存扣减、防超卖、异步下单、热点治理 |
+| [03b-seckill-system-4s.md](03b-seckill-system-4s.md) | **秒杀系统(4S 版)**：用 4S 重推秒杀 + 与 03 旧版对比 |
 | [04-realtime-barrage.md](04-realtime-barrage.md) | 实时弹幕系统：长连接、房间广播、限流、审核、消息扇出 |
+| [04b-realtime-barrage-4s.md](04b-realtime-barrage-4s.md) | **弹幕系统(4S 版)**：用 4S 重推弹幕(长连接+房间扇出样本) + 与 04 旧版对比 |
 | [05-live-streaming.md](05-live-streaming.md) | 直播系统：推流、转码、CDN、低延迟、弹幕互动、录制回放 |
 | [06-feed-system.md](06-feed-system.md) | Feed 信息流：推拉模型、时间线、fanout、排序、冷热治理 |
+| [06b-feed-system-4s.md](06b-feed-system-4s.md) | **Feed 系统(4S 版)**：用 4S 重推 Feed(写扩散+推拉混合样本) + 与 06 旧版对比 |
 | [08-im-system.md](08-im-system.md) | IM 即时通讯：长连接、可靠投递、离线消息、多端同步、群聊 |
+| [08b-im-system-4s.md](08b-im-system-4s.md) | **IM 系统(4S 版)**：用 4S 重推 IM(可靠投递+多端同步样本) + 与 08 旧版对比 |
 | [09-comment-system.md](09-comment-system.md) | 评论系统：楼中楼、热评、分页、审核、删除、计数 |
 | [10-like-counter-system.md](10-like-counter-system.md) | 点赞与计数系统：高频写、去重、热点计数、异步落库 |
 | [11-search-system.md](11-search-system.md) | 搜索系统：ES、倒排索引、数据同步、排序、延迟一致 |
+| [11b-search-system-4s.md](11b-search-system-4s.md) | **搜索系统(4S 版)**：用 4S 重推搜索(异构存储+CDC 同步样本) + 与 11 旧版对比 |
 | [12-file-storage-system.md](12-file-storage-system.md) | 网盘 / 文件存储：分片上传、秒传、对象存储、权限、去重 |
 | [13-payment-system.md](13-payment-system.md) | 支付系统：状态机、幂等、渠道回调、对账、补偿 |
+| [13b-payment-system-4s.md](13b-payment-system-4s.md) | **支付系统(4S 版)**：用 4S 重推支付(强一致样本) + 与 13 旧版对比 |
 | [14-coupon-system.md](14-coupon-system.md) | 优惠券系统：领券并发、防超领、核销、规则、过期 |
 | [15-inventory-system.md](15-inventory-system.md) | 库存系统：预占、扣减、释放、防超卖、库存分桶 |
 | [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md) | 打车派单系统：地理索引、司机匹配、派单策略、状态一致性 |
@@ -34,6 +42,8 @@
 | [18-api-gateway.md](18-api-gateway.md) | API 网关：路由、鉴权、限流、熔断、灰度、插件化 |
 | [19-config-center.md](19-config-center.md) | 配置中心：版本、灰度、回滚、长轮询、本地缓存、审计 |
 | [20-log-search-platform.md](20-log-search-platform.md) | 日志检索平台：日志采集、Kafka、ES、冷热存储、权限 |
+| [21-shopping-cart.md](21-shopping-cart.md) | 购物车系统(京东/淘宝)：Redis Hash 主存、价格库存实时聚合、未登录合并、按店拆单 |
+| [22-red-packet-system.md](22-red-packet-system.md) | 抢红包系统(微信/支付宝)：4S 法样板篇 — 预拆 + LPOP 抢 + MQ 异步入账 + 对账兜底 |
 
 ## 高频题速览
 
@@ -128,14 +138,15 @@
 ## 复习路径
 
 1. 先看 [00-question-map.md](00-question-map.md)，建立系统设计题型地图。
-2. 再看 [01-design-framework.md](01-design-framework.md)，掌握系统设计题答题套路。
-3. 看 [07-interview-answer-playbook.md](07-interview-answer-playbook.md)，掌握现场回答节奏。
-4. 再看 [02-short-code-platform.md](02-short-code-platform.md) 和 [03-seckill-system.md](03-seckill-system.md)，这是高频基础题。
-5. 然后看 [04-realtime-barrage.md](04-realtime-barrage.md) 和 [05-live-streaming.md](05-live-streaming.md)，补齐长连接、实时消息、音视频链路。
-6. 看 [06-feed-system.md](06-feed-system.md)、[08-im-system.md](08-im-system.md)、[09-comment-system.md](09-comment-system.md) 和 [10-like-counter-system.md](10-like-counter-system.md)，理解内容社区、实时通信和计数系统。
-7. 看 [11-search-system.md](11-search-system.md) 和 [12-file-storage-system.md](12-file-storage-system.md)，补齐搜索和文件存储。
-8. 看 [13-payment-system.md](13-payment-system.md)、[14-coupon-system.md](14-coupon-system.md) 和 [15-inventory-system.md](15-inventory-system.md)，补齐交易一致性、幂等和对账。
-9. 最后看 [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md)、[17-monitoring-alerting.md](17-monitoring-alerting.md)、[18-api-gateway.md](18-api-gateway.md)、[19-config-center.md](19-config-center.md) 和 [20-log-search-platform.md](20-log-search-platform.md)，补齐调度和基础设施类设计题。
+2. 再看 [01-design-framework.md](01-design-framework.md)，掌握系统设计题答题套路（10 步通用流程，写文档用）。
+3. 再看 [01b-4s-method.md](01b-4s-method.md)，掌握 **4S 面试答题模板**（Scenario / Service / Storage / Scale，白板用），里面有秒杀完整案例。
+4. 看 [07-interview-answer-playbook.md](07-interview-answer-playbook.md)，掌握现场回答节奏。
+5. 再看 [02-short-code-platform.md](02-short-code-platform.md) 和 [03-seckill-system.md](03-seckill-system.md)，这是高频基础题。
+6. 然后看 [04-realtime-barrage.md](04-realtime-barrage.md) 和 [05-live-streaming.md](05-live-streaming.md)，补齐长连接、实时消息、音视频链路。
+7. 看 [06-feed-system.md](06-feed-system.md)、[08-im-system.md](08-im-system.md)、[09-comment-system.md](09-comment-system.md) 和 [10-like-counter-system.md](10-like-counter-system.md)，理解内容社区、实时通信和计数系统。
+8. 看 [11-search-system.md](11-search-system.md) 和 [12-file-storage-system.md](12-file-storage-system.md)，补齐搜索和文件存储。
+9. 看 [13-payment-system.md](13-payment-system.md)、[14-coupon-system.md](14-coupon-system.md) 和 [15-inventory-system.md](15-inventory-system.md)，补齐交易一致性、幂等和对账。
+10. 最后看 [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md)、[17-monitoring-alerting.md](17-monitoring-alerting.md)、[18-api-gateway.md](18-api-gateway.md)、[19-config-center.md](19-config-center.md) 和 [20-log-search-platform.md](20-log-search-platform.md)，补齐调度和基础设施类设计题。
 
 ## 答题原则
 
