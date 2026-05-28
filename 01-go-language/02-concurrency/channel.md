@@ -2,7 +2,81 @@
 
 > CSP 通信原语：环形缓冲队列 + 两个等待队列 + 互斥锁；"不要通过共享内存来通信，要通过通信来共享内存"
 
-## 〇、核心提炼（5 段式）
+## 一、一句话总结(背诵版)
+
+> **Channel 是 Go 中用于 goroutine 之间通信和同步的机制**——可以用来**传递数据、发送信号、协调并发流程**;常见场景包括**并发处理、任务队列、超时控制、取消通知、扇入扇出、pipeline**。
+
+延伸(被追问时再展开):
+
+> 它的特别之处是把"**数据流动**"和"**协作时序**"合并成一件事——Mutex 只管"谁能进临界区",channel 同时管"谁先后 + 传什么"。所以 Rob Pike 才说:**Don't communicate by sharing memory; share memory by communicating**。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+> 详细 10 类见 [99-meta/go-100.md § A. Channel 使用场景十讲](../../99-meta/go-100.md#a-channel-使用场景十讲110)。这里只列**面试一定会被问到**的 6 个。
+
+| 场景 | 一句话 | 最小代码 |
+| --- | --- | --- |
+| **传数据 / 任务队列** | producer → consumer,buffer 削峰 | `tasks := make(chan T, 1024)` |
+| **扇出 fan-out** | 1 chan → N worker 共同消费 | N 个 goroutine `for t := range tasks` |
+| **扇入 fan-in** | N goroutine → 1 chan 收结果 | `go func() { wg.Wait(); close(results) }()` |
+| **超时控制** | select + `time.After` | `select { case v:=<-ch: case <-time.After(3*time.Second): }` |
+| **取消 / 广播** | `close(done)` 通知所有 receiver 同时退出 | `chan struct{}` + close |
+| **pipeline 流水线** | 多个 stage 用 channel 串联 | `for n := range sq(gen(...))` |
+
+**选 channel 还是锁的判断**:**有"流"或"控制"语义优先 channel;纯共享变量优先锁/atomic**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **关闭已关闭的 channel** | `panic: close of closed channel` | channel 的 close 状态在 hchan.closed 标记;runtime 显式禁止重复关闭 | 用 [sync.Once](#33-syncone-的实现原理) 包装 close,或独立 done channel |
+| **向已关闭的 channel 发送** | `panic: send on closed channel` | close 后语义是"不再有新数据进入",send 违反契约 | 只让 sender 关;多 sender 改用 done channel 控制退出 |
+| **从 nil channel 读 / 写** | 永久阻塞(goroutine 泄漏) | nil channel 的 send/recv 走的是阻塞路径,永远没有对端唤醒 | 检查 channel 是否 make;nil 只用于"动态关闭 select case" |
+| **range 未关闭的 channel** | 永远不退出 | range 的退出条件是 channel 关闭且 buf 空 | sender 完成后 `close(ch)` |
+| **`time.After` 在循环中** | timer 不释放,内存 / GC 压力 | After 内部 `NewTimer`,未触发前不能被 GC(Go 1.23 前) | 高频用 `time.NewTimer` + Reset/Stop |
+| **buffered 当无限队列** | buffer 满了照样阻塞 | buffer 容量是固定的,不会自动扩 | 该上 MQ 就上 MQ,channel 不是消息队列 |
+| **wg.Wait 在主 G,close(results) 也在主 G** | 主 G 先 Wait 卡住,生产者写 results 没人收也卡 | 主 G 既要收 results 又要 Wait,顺序错就死锁 | `go func() { wg.Wait(); close(results) }()` 单开 G 关 |
+| **认为 channel 比 Mutex 快** | 高频小数据 channel 反而慢 | channel 内部有 `hchan.lock`,每次操作都加锁 + 调度器配合 | channel 有 `hchan.lock`,纯计数用 `atomic.Int64` |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:无缓冲 channel 和有缓冲的区别?**
+无缓冲是**同步交接**,sender 直接把值复制到 receiver 的栈;send/recv 必须同时到达,否则挂起。有缓冲在 buf 未满时 send 不阻塞、未空时 recv 不阻塞,本质是**异步队列**。
+
+> **再换个角度看 send 语义(更锐利)**:
+> - `make(chan int)` 的 **send 完成 = 对方已经收到了**(同步交接,sender 醒来时 receiver 已经把值复制走了)
+> - `make(chan int, 1)` 的 **send 完成 = 值进了 buf**,**不保证对方已读**(可能 receiver 还没起来)
+>
+> 所以"等对方收到"的同步信号**只能用无缓冲**;`make(chan int, 1)` 是非阻塞投递槽,不是同步信号。这条对应 Go memory model 里的"无缓冲 channel 的 receive happens-before send 完成"(见 [memory-model.md](memory-model.md) 规则 3)。
+
+**Q2:close 之后还能读吗?**
+能。已写入的数据**全部能被读完**,读完后再读返回**零值 + ok=false**。`for range` 会自动在读完后退出。
+
+**Q3:多个 sender 怎么安全关闭 channel?**
+不让 sender 自己关。引入独立 `done chan struct{}`,触发取消时 `close(done)`,所有 sender select 到 done 后退出。如果非要关业务 channel,用 [`sync.Once`](#33-syncone-的实现原理) 包装。
+
+**Q4:select 都阻塞时会怎样?有 default 呢?**
+都阻塞 → 当前 goroutine 挂起,任一 case 就绪就唤醒。有 default → 立即走 default,不阻塞(用于非阻塞 send/recv 探测)。
+
+**Q5:channel 底层数据结构?**
+`hchan` = **环形 buffer 数组(buf)+ 发送队列(sendq)+ 接收队列(recvq)+ 互斥锁(lock)**。sendq/recvq 存挂起的 G,被对方唤醒时由 runtime 调度恢复。
+
+**Q6:select 多个 case 同时就绪选谁?**
+**伪随机**(Go runtime 在编译期把 case 顺序打乱),防止程序员依赖固定顺序,也是公平性保证。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 channel 的底层数据结构、调度交互、性能特征、关闭机制等源码级内容。**正常面试用不到**,只在被深追"hchan 怎么设计的 / sendq 怎么唤醒"时才会用到。
+
+### 〇、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）
 
@@ -169,6 +243,262 @@ nil channel:
       // 自动结束 when ch 关闭且空
   }
 ```
+
+#### 3.1 如何防止 channel 重复关闭(高频面试题)
+
+```text
+问题:
+  close 一个已关闭的 channel → panic("close of closed channel")
+  多 sender 场景下,谁来 close、什么时候 close,极易出错
+
+三种工程做法(按推荐度排序):
+```
+
+**做法 A:`sync.Once` 包装 close(最常用)**
+
+```go
+type SafeChan struct {
+    ch    chan int
+    once  sync.Once
+}
+
+func (s *SafeChan) Close() {
+    s.once.Do(func() { close(s.ch) })
+}
+```
+
+任意 goroutine 调用 `Close()` 任意次,**底层 `close(ch)` 只会执行一次**——`sync.Once` 保证。
+
+**做法 B:独立的 done channel(不关业务 ch)**
+
+```go
+done := make(chan struct{})
+// sender:
+select {
+case ch <- v:
+case <-done:
+    return
+}
+// 关闭:close(done) 让所有 sender 退出,业务 ch 永不 close
+```
+
+适合 **N sender + M receiver** 的复杂拓扑——不关业务 ch,**没有"谁关"的争议**。
+
+**做法 C:recover 兜底(下策)**
+
+```go
+func safeClose(ch chan int) (closed bool) {
+    defer func() {
+        if recover() != nil {
+            closed = false
+        }
+    }()
+    close(ch)
+    return true
+}
+```
+
+**不推荐**:用 panic 当控制流,掩盖设计问题。仅作"老代码救火"手段。
+
+#### 3.2 sync.Once 的实现原理
+
+> `sync.Once = 原子状态位做快速判断 + 锁做并发保护 + 双重检查保证函数只执行一次`
+
+简化版源码(标准库实际结构等价):
+
+```go
+type Once struct {
+    done uint32      // 0 = 未执行,1 = 已执行
+    mu   sync.Mutex
+}
+
+func (o *Once) Do(f func()) {
+    // 第一层:无锁快速路径
+    if atomic.LoadUint32(&o.done) == 1 {
+        return
+    }
+
+    // 第二层:加锁后再检查(double-check)
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    if o.done == 0 {
+        defer atomic.StoreUint32(&o.done, 1)
+        f()
+    }
+}
+```
+
+**两层检查的必要性**:
+
+| 层 | 作用 | 没有会怎样 |
+| --- | --- | --- |
+| **第一层**(atomic Load,无锁) | **快速路径**:已执行过直接返回,**百万次调用零锁开销** | 每次都要抢锁,性能崩坏 |
+| **第二层**(锁内再判 done==0) | **临界检查**:防止 A、B 同时通过第一层,A 拿锁执行后 B 又执行一次 | A 执行完释放锁,B 进入临界区会**重复执行 f** |
+
+**执行时序**(A、B 同时调用):
+
+```text
+A: Load done=0 → 抢锁成功 → 锁内判 done=0 → 执行 f() → done=1 → 释放锁
+B: Load done=0 → 等锁 ─────────────────────→ 拿锁 → 锁内判 done=1 → 直接返回
+```
+
+**几个关键认知(面试加分)**:
+
+1. **"执行一次"≠"成功一次"**
+
+   ```go
+   var once sync.Once
+   once.Do(func() {
+       panic("boom") // f panic 了
+   })
+   once.Do(func() {
+       fmt.Println("never run") // ❌ 不会执行!
+   })
+   ```
+
+   Once 认为"调用过 f 就算 Do 过",**不管 f 是否 panic**。要"重试到成功",用别的(如 [errgroup](../../20-coding-problems/11-errgroup.md) / 自己写循环 + CAS)。
+
+2. **`defer atomic.StoreUint32(&o.done, 1)` 的 defer 是关键**
+
+   即使 `f()` panic,**done 也会被置 1**,保证后续调用直接返回——避免"f panic 后死循环"。
+
+3. **为什么不用纯 atomic CAS**
+
+   ```go
+   // ❌ 看起来更简洁,但有问题
+   if atomic.CompareAndSwapUint32(&o.done, 0, 1) {
+       f()
+   }
+   ```
+
+   CAS 成功后 f 还在执行时,**其他 goroutine Load done=1 直接返回,但 f 还没跑完**——它们可能拿到未初始化的资源。`sync.Once` 用 Mutex **让"看到 done=1"和"f 执行完"建立 happens-before 关系**(等锁的人必然 happens-after 持锁人释放锁,因此也 happens-after f 的完成)。
+
+4. **Go 1.21+ 的语法糖**:`sync.OnceFunc / OnceValue / OnceValues` —— 把 `once.Do(f)` 包成可直接调用的函数,**底层仍是 Once**。
+
+#### 3.3 "成功为止执行一次":RetryOnce
+
+> `sync.Once` 的语义是**"最多执行一次"**——f panic 或返回 error,也算执行过,后续 Do 直接返回。
+>
+> 但有些场景要的是**"成功为止执行一次"**——失败可以重试,直到首次成功才"封印"。典型场景:**懒加载远程配置 / 建立到第三方的长连接 / 初始化需要外部资源的单例**。这时候不能用 `sync.Once`,要自己写。
+
+**版本 1:基础 RetryOnce(失败允许重试)**
+
+```go
+type RetryOnce struct {
+    mu   sync.Mutex
+    done bool
+}
+
+func (o *RetryOnce) Do(f func() error) error {
+    o.mu.Lock()
+    defer o.mu.Unlock()
+
+    if o.done {
+        return nil
+    }
+
+    if err := f(); err != nil {
+        return err // 失败不标记 done,下次还会重试
+    }
+
+    o.done = true
+    return nil
+}
+```
+
+**关键差异**(对比 `sync.Once`):
+
+| | `sync.Once` | `RetryOnce` |
+| --- | --- | --- |
+| 触发标记的时机 | **进入 f 就标记** | **f 返回 nil 才标记** |
+| f 返回 error | done = true,下次跳过 | done = false,下次重试 |
+| f panic | done = true,下次跳过 | 默认会向上抛(不标记 done) |
+| 调用签名 | `Do(func())` 无返回 | `Do(func() error) error` |
+| 性能 | 双重检查,快速路径无锁 | **每次都要拿锁**(没有快速路径) |
+
+**版本 2:把 panic 转成 error**
+
+```go
+func (o *RetryOnce) Do(f func() error) (err error) {
+    o.mu.Lock()
+    defer o.mu.Unlock()
+
+    if o.done {
+        return nil
+    }
+
+    defer func() {
+        if r := recover(); r != nil {
+            err = fmt.Errorf("panic: %v", r)
+            // 注意:不设 done = true,允许下次重试
+        }
+    }()
+
+    if err = f(); err != nil {
+        return err
+    }
+
+    o.done = true
+    return nil
+}
+```
+
+**几个值得讲清楚的细节**:
+
+1. **没有"双重检查"**
+
+   RetryOnce 没法像 sync.Once 那样做无锁快速路径——因为 done 的语义是"成功才置位",**并发下不能简单 Load done 就返回 nil**(可能正有别的 G 在重试,你跳过等于错过了报错机会)。所以全程在锁内,**性能不如 Once**。
+
+   优化思路:done 置位后**才能**走无锁快速路径(此时已成功,语义稳定):
+
+   ```go
+   func (o *RetryOnce) Do(f func() error) error {
+       if atomic.LoadUint32(&o.doneFlag) == 1 {
+           return nil // 已成功,快速返回
+       }
+       o.mu.Lock()
+       defer o.mu.Unlock()
+       if o.doneFlag == 1 { return nil }
+       if err := f(); err != nil { return err }
+       atomic.StoreUint32(&o.doneFlag, 1)
+       return nil
+   }
+   ```
+
+2. **持锁调 f 的风险**
+
+   f 在锁内执行,**f 慢则所有等待者都堵着**——远程调用 / IO 场景要警惕。可以改"先 CAS 抢执行权,执行完广播",但代码复杂度上升,通常不值得;真要高并发懒加载,**直接上 [singleflight](../../20-coding-problems/07-singleflight.md)**。
+
+3. **不要用 `errors.Is(err, somewhereSentinel)` 判断**
+
+   调用方只关心 "成功了没",失败就重试——业务语义清晰即可,不需要细分错误类型。
+
+#### 3.4 三种"一次性"原语怎么选
+
+| 场景 | 用什么 | 理由 |
+| --- | --- | --- |
+| **关 channel / 释放资源**(幂等) | `sync.Once` | 最常用,失败也无需重试 |
+| **本地单例初始化**(几乎不会失败) | `sync.Once` | 性能最好,panic 就是 bug 该 fail-fast |
+| **远程配置 / 第三方连接初始化**(可能失败) | **RetryOnce** | 失败允许下次重试,避免一次失败永久残废 |
+| **大量并发等同一个慢操作的结果** | **[singleflight](../../20-coding-problems/07-singleflight.md)** | 合并请求,**所有 caller 拿到同一个结果**,带共享 + 重试语义 |
+
+**一句话**:
+
+> `sync.Once` = **最多执行一次**(进入即封印);
+> `RetryOnce` = **成功为止执行一次**(成功才封印);
+> `singleflight` = **同时只有一个在执行,所有 caller 共享结果**(成功失败都共享,失败下一波重新抢)。
+
+---
+
+**回到主题**——为什么用 `sync.Once` 关 channel 是安全的:
+
+```go
+var closeOnce sync.Once
+// 多个 goroutine 都可以放心调:
+closeOnce.Do(func() { close(ch) }) // 只有第一个真正执行 close,其余直接返回
+```
+
+不会 panic,不会漏关,**也不需要任何额外协调**——这是它取代裸 close 的根本原因。
 
 #### 4. select 多路复用
 
