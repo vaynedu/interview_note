@@ -1,6 +1,8 @@
 # 分布式 · 分布式 ID
 
 > UUID / 雪花算法（Snowflake） / 号段模式（Segment） / 美团 Leaf / Redis INCR / 时钟回拨问题 / 选型
+>
+> **系统设计视角**：见 [../10-system-design/23-id-generator-system-4s.md](../10-system-design/23-id-generator-system-4s.md) ——用 4S 分析法（Scenario / Service / Storage / Scale）把发号器当成一道系统设计题来推；本文偏原理深度，新文偏架构取舍，**两份共存**。
 
 ## 一、为什么需要分布式 ID
 
@@ -254,6 +256,18 @@ flowchart TD
     Memory -.用完.-> DB[(DB)]
     DB -->|取下一段 2000 2999<br/>UPDATE max_id=max_id+1000| Memory
 ```
+
+**分布式多实例场景**：中心发号器（DB）按 step 把号段分配给不同机器，每台机器拿到互不重叠的区间：
+
+```text
+机器 A：取段 → [1,       100000]
+机器 B：取段 → [100001,  200000]
+机器 C：取段 → [200001,  300000]
+```
+
+每台机器在自己的区间内**本地自增**，用完再向 DB 申请下一段。DB 只需保证 `UPDATE max_id = max_id + step` 的原子性（乐观锁 version 字段），并发取段不会重叠。
+
+> 系统设计视角（三级降级 / 双 Buffer 架构 / 防业务量泄露）见 [../10-system-design/23-id-generator-system-4s.md](../10-system-design/23-id-generator-system-4s.md)
 
 ### 5.2 DB 表
 
