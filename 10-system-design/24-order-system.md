@@ -652,3 +652,231 @@ T+1 拉三方账单，按 out_trade_no 逐单比对。金额不符进差异平�
 > 核心三招：**user_id 分片**服务主流量（C 端 80%）+ **基因法 order_id** 让其他视角零跨库（1000× 性能差异）+ **三方 ID 按关系基数拆**（1:1 冗余主表 / 1:N 独立映射 + out_trade_no 自带基因 O(1) 反查）。
 >
 > 配套：状态机不可逆 + 全链路幂等 + delay queue 超时 + T+1 对账兜底 + 三角色查询路径物理隔离 + 大促削峰组合拳。
+
+## 附录 A：Redis Lua 库存扣减完整实现
+
+> [5.1 下单写链路](#51-下单写链路同步路径要短) 第 5 步「Redis Lua 预占库存」的展开。本附录给出**完整的预占 / 释放 / 实扣三态机 + 五层兜底**,资深面试可深入到这一层。
+>
+> 库存系统自身的完整设计见 [15-inventory-system.md](15-inventory-system.md),本附录只覆盖**订单链路侧的库存调用**。
+
+### A.1 为什么必须 Lua
+
+Redis 单线程,但**两个命令之间会被其他客户端插队**：
+
+```text
+错误做法(有超卖风险):
+  GET stock:sku_123          → 返回 1
+  ⚠️ 此时另一个客户端也 GET 到 1
+  DECR stock:sku_123         → 两个客户端都"扣成功"
+
+正确做法(Lua 原子):
+  Lua 脚本内部 GET + DECR 整体执行,中间不会被插入其他命令
+```
+
+**Lua 的本质**：把多步操作打包成一个**原子单元**,Redis 单线程执行期间锁住所有其他请求。
+
+### A.2 数据结构选择
+
+```text
+方案 1: String(简单库存)
+  SET stock:sku_123 1000
+  ❌ 无法记录"哪些用户已预占",防重复占用要另开 Set
+
+方案 2: Hash(本文采用)
+  HSET stock:sku_123 total 1000 remaining 1000 reserved 0
+  ✅ 一次操作多字段,total 不变,remaining/reserved 联动
+```
+
+### A.3 预占 Lua 脚本（核心）
+
+```lua
+-- KEYS[1] = stock:sku_{sku_id}        商品库存 Hash
+-- KEYS[2] = reserve:sku_{sku_id}      预占记录 Set(防重复占用)
+-- ARGV[1] = order_id                  幂等键
+-- ARGV[2] = quantity                  扣减数量
+-- ARGV[3] = expire_seconds            预占过期时间(兜底)
+
+-- 1. 幂等检查:同一订单不能重复扣
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
+    return 0  -- 已预占,幂等返回成功
+end
+
+-- 2. 读剩余库存
+local remaining = tonumber(redis.call('HGET', KEYS[1], 'remaining'))
+if remaining == nil then
+    return -1  -- 商品不存在(冷启动未加载)
+end
+
+-- 3. 库存判断
+local qty = tonumber(ARGV[2])
+if remaining < qty then
+    return -2  -- 库存不足
+end
+
+-- 4. 原子扣减 + 记录预占
+redis.call('HINCRBY', KEYS[1], 'remaining', -qty)
+redis.call('HINCRBY', KEYS[1], 'reserved', qty)
+redis.call('SADD', KEYS[2], ARGV[1])
+redis.call('EXPIRE', KEYS[2], ARGV[3])  -- 兜底过期
+
+return 1  -- 成功
+```
+
+**返回值约定**:
+
+| 值 | 含义 | 业务处理 |
+| --- | --- | --- |
+| `1` | 预占成功 | 继续落库 |
+| `0` | 幂等命中(已预占过) | 返回缓存的 order_id |
+| `-1` | 商品不存在 | 报错,触发冷启动加载 |
+| `-2` | 库存不足 | 告知用户,返回前端 |
+
+### A.4 Go 调用代码
+
+```go
+const reserveStockScript = `... A.3 的 Lua ...`
+
+type StockClient struct {
+    rdb    *redis.Client
+    script *redis.Script  // 自动 EVALSHA 优化
+}
+
+func NewStockClient(rdb *redis.Client) *StockClient {
+    return &StockClient{
+        rdb:    rdb,
+        script: redis.NewScript(reserveStockScript),
+    }
+}
+
+// ReserveStock 预占库存
+func (c *StockClient) ReserveStock(ctx context.Context, skuID, orderID int64, qty int) error {
+    keys := []string{
+        fmt.Sprintf("stock:sku_%d", skuID),
+        fmt.Sprintf("reserve:sku_%d", skuID),
+    }
+    args := []interface{}{orderID, qty, 1800}  // 30 min 兜底过期
+
+    result, err := c.script.Run(ctx, c.rdb, keys, args...).Int()
+    if err != nil {
+        return fmt.Errorf("redis lua failed: %w", err)
+    }
+
+    switch result {
+    case 1, 0:
+        return nil  // 1 = 新预占,0 = 幂等命中
+    case -1:
+        return ErrSkuNotFound
+    case -2:
+        return ErrInsufficientStock
+    default:
+        return fmt.Errorf("unexpected result: %d", result)
+    }
+}
+```
+
+**关键点**:
+
+- 用 `redis.NewScript` 而不是直接 `EVAL`,SDK 会自动缓存 SHA,第二次起走 `EVALSHA`,减小网络包大小
+- `context` 必传,大促时配 100 ms timeout,避免雪崩
+- 错误分类返回,业务层按 `errors.Is` 判断
+
+### A.5 释放库存（取消 / 超时）
+
+```lua
+-- KEYS[1] = stock:sku_{sku_id}
+-- KEYS[2] = reserve:sku_{sku_id}
+-- ARGV[1] = order_id
+-- ARGV[2] = quantity
+
+-- 1. 必须先确认确实预占过(防重复释放)
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 0 then
+    return 0  -- 没预占过或已释放,幂等
+end
+
+-- 2. 原子释放
+local qty = tonumber(ARGV[2])
+redis.call('HINCRBY', KEYS[1], 'remaining', qty)
+redis.call('HINCRBY', KEYS[1], 'reserved', -qty)
+redis.call('SREM', KEYS[2], ARGV[1])
+
+return 1
+```
+
+**触发释放的场景**:
+
+- 用户主动取消订单 → 状态机推 `CANCELED` 时调用
+- delay queue 触发超时 → 推 `TIMEOUT` 时调用(详见 [5.3](#53-超时取消链路delay-queue))
+- 支付失败 → 状态回滚时调用
+
+### A.6 实扣库存（支付成功后）
+
+```text
+支付成功 MQ 事件 → 库存服务消费:
+  1. Lua 把 reserved 减 qty,total 减 qty(库存真正消耗)
+  2. SREM 移除预占记录
+  3. binlog → MQ → MySQL stock 表异步更新(对账兜底)
+```
+
+### A.7 完整三态时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant API as 下单服务
+    participant L as Redis(Lua)
+    participant DB as MySQL
+    participant MQ as MQ
+    participant Stock as 库存服务
+
+    U->>API: POST /order/create
+    API->>API: 幂等校验 SETNX(user_id, requestId)
+    API->>L: EVALSHA reserveStock(sku, order_id, qty)
+    L-->>API: 1(成功)
+    API->>DB: INSERT orders + order_items
+    API->>MQ: 投递「订单创建」事件
+    API-->>U: 200 OK + order_id
+
+    alt 用户支付
+        MQ->>Stock: 「订单已支付」事件
+        Stock->>L: EVALSHA confirmStock(sku, order_id, qty)
+        Stock->>DB: UPDATE stock SET sold += qty
+    else 30 min 未支付
+        MQ->>Stock: 「订单超时」delay 消息
+        Stock->>L: EVALSHA releaseStock(sku, order_id, qty)
+    else 用户主动取消
+        API->>Stock: 取消事件
+        Stock->>L: EVALSHA releaseStock(sku, order_id, qty)
+    end
+```
+
+### A.8 防超卖五层兜底
+
+| 层 | 防御点 | 作用 |
+| --- | --- | --- |
+| 1 | Redis Lua 原子扣减 | 99.99% 拦截 |
+| 2 | reserve Set 幂等记录 | 防重复预占 |
+| 3 | MySQL `UPDATE WHERE stock >= qty` | Redis 挂了的兜底 |
+| 4 | binlog → ES 异步对账 | 发现 Redis/MySQL 不一致告警 |
+| 5 | T+1 库存盘点 | 终极兜底,赔付 + 修数据 |
+
+**核心信念**: 不存在 100% 防超卖,只能把超卖率压到 < 0.001%,剩下用赔付兜住。
+
+### A.9 常见坑（资深加分）
+
+| 坑 | 解决 |
+| --- | --- |
+| **冷启动**: Redis 重启 stock 没了 | 服务启动时从 MySQL 加载到 Redis,加载期间拒绝下单 |
+| **热点 SKU**: 爆款集中扣同一个 key | 库存分桶,把 1000 库存拆 10 个 Bucket 各 100,Lua 随机选桶 |
+| **大 Key**: reserve Set 暴涨 | 用过期 + 定时清理(预占成功后落 MySQL,Redis Set 用作短期幂等) |
+| **集群 Lua**: KEYS 必须同 slot | 用 hash tag `stock:{sku_123}` 让 KEYS[1]/KEYS[2] 落同槽 |
+| **Lua 阻塞**: 复杂脚本卡住 Redis | 脚本要短,禁止循环大集合,禁止外部网络调用 |
+
+### A.10 与其他系统的库存模型对比
+
+| 系统 | 库存模型 | Lua 复杂度 |
+| --- | --- | --- |
+| **订单系统(本文)** | 预占 + 释放 + 实扣三态 | 中(本附录样板) |
+| **秒杀** [03-seckill-system.md](03-seckill-system.md) | 直接扣,不预占(秒杀就是不付款也不放回) | 低 |
+| **优惠券** [14b-coupon-system-4s.md](14b-coupon-system-4s.md) | 领券 = 直接占,核销才真正消费 | 中 |
+| **库存系统** [15-inventory-system.md](15-inventory-system.md) | 完整三态机 + 分桶 + 异步对账 | 高(库存领域专家) |
