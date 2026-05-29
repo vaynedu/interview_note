@@ -2,6 +2,46 @@
 
 > 面向资深 Go 后端面试的系统设计题：按场景拆解容量、数据模型、核心链路、架构取舍和线上风险。
 
+## 写作规范：双版本设计
+
+> 高频系统设计题采用**双版本并存**：每道题写两份，同场景、同考点，但叙述节奏不同——**一份用来理解原理，一份用来面试答题**。
+
+### 命名约定
+
+| 文件名 | 风格 | 框架 | 适用场景 |
+| --- | --- | --- | --- |
+| `XX-name.md` | **教学讲解视角**，主题平铺，节奏舒缓 | [01-design-framework.md](01-design-framework.md) **10 步通用流程**（需求/容量/对象/架构/链路/数据/一致性/瓶颈/取舍/演进）| 第一次学该系统 / 写工程文档 / 推导原理 |
+| `XXb-name-4s.md` | **面试答题视角**，紧凑递进，带时间标签 | [01b-4s-method.md](01b-4s-method.md) **4S 分析法**（Scenario / Service / Storage / Scale）| 面试白板答题 / 资深快速复述 / 架构评审 |
+
+### 为什么双版本
+
+- **职责分离**：10 步版讲"为什么这样设计"（推导原理），4S 版讲"怎么讲出来"（答题模板）。
+- **学习路径自然**：先 10 步打基础，再 4S 练表达，对应"理解 → 输出"两阶段。
+- **可扩展统一**：新系统直接复用双轨命名，无须每次纠结风格。
+- **维护成本可控**：三大考点 / SQL 表结构 / 容量数字只在一份里详写，另一份用 `详见 XXb §x.x` 跳转。
+
+### 现有双版本对照
+
+| 主题 | 10 步版（教学）| 4S 版（答题）|
+| --- | --- | --- |
+| 短链 / 短码 | [02-short-code-platform.md](02-short-code-platform.md) | [02b-short-code-platform-4s.md](02b-short-code-platform-4s.md) |
+| 秒杀 | [03-seckill-system.md](03-seckill-system.md) | [03b-seckill-system-4s.md](03b-seckill-system-4s.md) |
+| 弹幕 | [04-realtime-barrage.md](04-realtime-barrage.md) | [04b-realtime-barrage-4s.md](04b-realtime-barrage-4s.md) |
+| Feed | [06-feed-system.md](06-feed-system.md) | [06b-feed-system-4s.md](06b-feed-system-4s.md) |
+| IM | [08-im-system.md](08-im-system.md) | [08b-im-system-4s.md](08b-im-system-4s.md) |
+| 搜索 | [11-search-system.md](11-search-system.md) | [11b-search-system-4s.md](11b-search-system-4s.md) |
+| 支付 | [13-payment-system.md](13-payment-system.md) | [13b-payment-system-4s.md](13b-payment-system-4s.md) |
+| 订单 | [24-order-system.md](24-order-system.md) | [24b-order-system-4s.md](24b-order-system-4s.md) |
+
+### 新增系统设计题的默认动作
+
+写新高频系统时**默认产出两份**：
+1. 先写 `XX-name.md`（10 步框架）梳理原理与取舍。
+2. 再写 `XXb-name-4s.md`（4S 框架）压缩成答题节奏。
+3. 在两份文件末尾互相交叉引用，避免内容漂移。
+
+低频 / 工具型系统（如 17-monitoring、18-gateway、19-config-center、20-log-search）可只写单版本——双版本是高频题的标配，不是硬性要求。
+
 ## 分类导航
 
 ### 方法论
