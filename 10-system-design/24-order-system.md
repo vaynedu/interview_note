@@ -880,3 +880,212 @@ sequenceDiagram
 | **秒杀** [03-seckill-system.md](03-seckill-system.md) | 直接扣,不预占(秒杀就是不付款也不放回) | 低 |
 | **优惠券** [14b-coupon-system-4s.md](14b-coupon-system-4s.md) | 领券 = 直接占,核销才真正消费 | 中 |
 | **库存系统** [15-inventory-system.md](15-inventory-system.md) | 完整三态机 + 分桶 + 异步对账 | 高(库存领域专家) |
+
+## 附录 B：库存三态机 + 超时释放完整实现
+
+> [5.1 下单写链路](#51-下单写链路同步路径要短) / [5.2 支付回调](#52-支付回调链路关键考点三方-id-反查) / [5.3 超时取消](#53-超时取消链路delay-queue) 三条链路的库存视角整合,完整讲清「预占 → 实扣 / 释放」三态机如何在生产环境落地。
+>
+> 区别于附录 A 单一脚本的细节,本附录从**业务状态机**视角串起整个链路。
+
+### B.1 生产稳态架构(业界主流共识)
+
+```text
+1. 延迟消息为主           ─→ RocketMQ delay / 自实现 ZSet,O(1) 投递
+2. 定时扫描补偿           ─→ 兜底未触发的延时消息(MQ 丢消息 / 重启丢失)
+3. Redis 只做高性能库存状态 ─→ 实时扣减、毫秒响应,大促主链路
+4. MySQL 订单状态作为最终判断依据 ─→ 真相之源,所有 CAS 走 MySQL
+```
+
+**信念**：Redis 是"事务台账"快但易失,MySQL 是"会计账本"慢但权威——任何状态分歧以 MySQL 为准。
+
+### B.2 库存三态字段定义
+
+```text
+Redis Hash: stock:sku_{id}
+  total       总库存(初始化值,会随实扣递减)
+  available   可下单库存(下单时扣减,等价于 remaining)
+  locked      已预占未实扣(下单 +,实扣/释放 -)
+  sold        已售出(实扣 +,统计用)
+  
+  恒等式: total = available + locked + sold(若 total 不递减则用此式)
+  本附录采用: total 实扣时递减,sold 单独累计
+```
+
+**两套字段命名约定都可接受**:
+
+| 命名 A(附录 A) | 命名 B(本附录) | 含义 |
+| --- | --- | --- |
+| `remaining` | `available` | 可下单库存 |
+| `reserved` | `locked` | 已预占未支付 |
+| `total - reserved` | `total - locked - sold` | 实际剩余 |
+
+资深视角:**字段命名跟着团队约定走,不强求统一。重要的是状态机语义清晰**。
+
+### B.3 下单链路(预占)
+
+```text
+1. Redis Lua 预占库存(available --, locked ++)
+2. MySQL 创建订单,state='WAIT_PAY',写 expire_time
+3. 发送延迟关闭消息(30 min 后投递)
+4. 返回 order_id
+```
+
+**关键点**:`expire_time` 是数据库字段,延迟消息只是"提醒",**真正的判断依据是 MySQL 的 expire_time + state**。这样即使延迟消息丢失,定时扫描也能补偿。
+
+### B.4 支付成功链路(实扣)
+
+```text
+1. 三方支付回调到达
+2. 基因解码 out_trade_no → 定位订单分片
+3. MySQL CAS: UPDATE state='PAID' WHERE state='WAIT_PAY'
+   - affected_rows=0 → 幂等返回(已支付 / 已关闭)
+   - affected_rows=1 → 继续
+4. 发送「确认库存」MQ 消息(异步,不阻塞回调)
+5. 库存服务消费:
+   Lua 幂等确认 locked -> sold(reserved -=qty, sold +=qty)
+   MySQL UPDATE stock 表(异步对账)
+6. 三方 ACK
+```
+
+**为什么实扣走 MQ 异步**:
+
+- 支付回调要快(三方有超时,超过会重投)
+- Redis 实扣是必须的(防止用户取消时错误释放已支付的库存)
+- 但 MQ 投递 + Redis 操作 < 5 ms,可接受同步——**这里有个细节**:
+
+| 方案 | Redis 实扣时机 | 一致性 | 性能 |
+| --- | --- | --- | --- |
+| **方案 1**(同步) | 支付回调内同步调 Lua | 强一致 | 回调 + 5 ms |
+| **方案 2**(异步) | MQ 消费时调 Lua | 秒级最终一致 | 回调 < 10 ms |
+| **混合**(推荐) | Lua 同步(快),MySQL 异步 MQ | Redis 强一致 + MySQL 最终 | 最优 |
+
+**推荐混合方案**:Redis 是库存真相,必须同步;MySQL 是统计兜底,可异步。
+
+### B.5 超时关闭链路(释放)
+
+```text
+1. 延迟消息到达(30 min 后)
+2. MySQL CAS: UPDATE state='CLOSED' WHERE state='WAIT_PAY'
+3. 若 affected_rows=1:
+   Lua 释放库存(available ++, locked --)
+   写 audit log
+4. 若 affected_rows=0:
+   用户已支付或主动取消,幂等返回
+```
+
+### B.6 定时扫描补偿(关键!)
+
+延迟消息**会丢**(MQ 故障 / 消费失败 / 投递时机偏差),所以必须有定时扫描兜底:
+
+```sql
+-- 每 5 分钟扫一次,捞已超时但仍在 WAIT_PAY 的订单
+-- 注意:1024 张表要分库分表轮询,不能全局扫
+SELECT order_id FROM orders_dbN_tM 
+WHERE state = 'WAIT_PAY' 
+  AND expire_time < NOW() 
+  AND expire_time > NOW() - INTERVAL 1 HOUR  -- 限定范围避免全表
+LIMIT 1000;
+```
+
+**对每条订单**:
+
+```go
+func ScanAndClose(ctx context.Context, orderID int64) {
+    // 复用超时关闭逻辑(走 CAS 兜底)
+    affected, _ := db.UpdateState(ctx, orderID, "WAIT_PAY", "CLOSED")
+    if affected == 1 {
+        stock.ReleaseStock(ctx, skuID, orderID, qty)
+        log.Warn("timeout msg lost, fallback by scanner", "orderID", orderID)
+    }
+}
+```
+
+**资深细节**:
+
+- 扫描频率:5-10 min(主链路是延迟消息,扫描只是兜底,不需要太频繁)
+- 限定 `expire_time` 范围:防止扫到上古订单
+- 触发告警:如果扫到的数量 > 阈值,说明 MQ 出问题了
+- 分片轮询:1024 张表,每次扫一批分片,避免雪崩
+
+### B.7 完整三态时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant API as 下单服务
+    participant L as Redis Lua
+    participant DB as MySQL
+    participant MQ as RocketMQ
+    participant Pay as 支付回调
+    participant TS as 超时服务
+    participant Scan as 定时扫描
+
+    Note over U,API: 下单(预占)
+    U->>API: 提交订单
+    API->>L: reserveStock(available--, locked++)
+    API->>DB: INSERT orders<br/>state=WAIT_PAY, expire_time=now+30min
+    API->>MQ: 投递延迟消息(delay=30min)
+    API-->>U: order_id
+
+    par 路径 1:支付成功
+        Pay->>DB: CAS UPDATE state=PAID<br/>WHERE state=WAIT_PAY
+        Pay->>L: confirmStock(locked--, sold++)
+        Pay->>MQ: 投递「实扣消息」(异步对账)
+        MQ->>DB: UPDATE stock SET total-=qty
+    and 路径 2:超时关闭(延迟消息)
+        MQ->>TS: 30min 后投递
+        TS->>DB: CAS UPDATE state=CLOSED<br/>WHERE state=WAIT_PAY
+        alt affected=1
+            TS->>L: releaseStock(available++, locked--)
+        else affected=0
+            Note over TS: 已支付/已取消,幂等
+        end
+    and 路径 3:定时扫描兜底
+        Scan->>DB: SELECT WAIT_PAY AND expire_time<NOW()
+        Scan->>DB: CAS UPDATE state=CLOSED
+        Scan->>L: releaseStock(if CAS 成功)
+    end
+```
+
+### B.8 五道防线(为什么生产稳)
+
+| 防线 | 触发 | 作用 |
+| --- | --- | --- |
+| **L1 延迟消息** | 主链路,30 min 后投递 | 99% 场景触发关闭 |
+| **L2 定时扫描** | 每 5 min 扫 WAIT_PAY+expire_time<NOW | MQ 丢消息时兜底 |
+| **L3 MySQL CAS** | 所有状态推进 | 防并发竞争,affected=0 即幂等 |
+| **L4 Redis Lua 幂等** | reserve Set 防重复操作 | 重复释放/实扣自动忽略 |
+| **L5 T+1 对账** | 凌晨扫所有订单 vs Redis | 终极兜底,差异告警 |
+
+**三个核心信念**(资深面试可直接背):
+
+1. **MySQL state + expire_time 是最终判断依据,Redis 只是缓存**
+2. **延迟消息 + 定时扫描双保险**,缺一不可
+3. **所有状态变更走 CAS**,affected_rows 决定后续动作
+
+### B.9 资深追问预案
+
+| 追问 | 回答 |
+| --- | --- |
+| 延迟消息丢了怎么办? | 定时扫描兜底(L2),5 min 内触发关闭 |
+| Redis 挂了影响什么? | 下单失败(Lua 不可用),但已存在订单不影响——MySQL state 还在,扫描补偿仍工作 |
+| 支付回调和超时消息同时到达? | MySQL CAS 串行执行,只有一个 affected=1,另一个 affected=0 自动放弃 |
+| MySQL 已 PAID 但 Redis 还在 locked? | T+1 对账发现,人工修复(Redis 是缓存,修就是) |
+| MySQL 已 CLOSED 但 Redis 没释放? | 同上,T+1 修复,或下次同 SKU 库存查询时触发对账 |
+| MQ 重复投递延迟消息? | CAS WHERE state='WAIT_PAY',第二次 affected=0,自动幂等 |
+| 用户主动取消和超时同时发生? | 同上,CAS 串行,谁先谁赢,另一个幂等 |
+| 为什么不用 MySQL 行锁? | 行锁影响并发,CAS 是乐观锁,更适合高并发场景 |
+
+### B.10 与其他时机决策的横向对比
+
+| 维度 | 扫表方案 | 延迟消息单独 | **延迟消息+扫描(本附录)** |
+| --- | --- | --- | --- |
+| 延迟精度 | 分钟级(扫描间隔) | 秒级 | 秒级 |
+| DB 压力 | 高(频繁扫) | 0 | 低(扫描频率低) |
+| MQ 依赖 | 无 | 强 | 中(只是主链路) |
+| 丢消息容错 | 天然容错 | ❌ | ✓(扫描兜底) |
+| 实现复杂度 | 低 | 低 | 中 |
+| 业界采用 | 中小项目 | 早期方案 | **生产稳态** |
+
+**结论**:延迟消息主导 + 定时扫描兜底,是各大电商生产环境的事实标准——抖音电商、淘宝、京东、拼多多基本都是这个套路。
