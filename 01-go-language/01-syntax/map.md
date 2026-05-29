@@ -2,6 +2,72 @@
 
 > Go map：链式哈希表，bmap (bucket) + tophash 数组 + 溢出桶；非并发安全，迭代无序
 
+## 一、一句话总结(背诵版)
+
+> **Go map 是基于链式哈希表实现的 K/V 关联容器**——hmap + bmap 两层结构、tophash 加速查找、渐进式扩容;**非并发安全(并发读写直接 fatal)、迭代故意无序、删除不缩容**。
+
+延伸(被追问时再展开):
+
+> map 的本质是**"链式哈希表 + 8 元素一桶 + 增量迁移"**:一个 bucket 装 8 个 K/V 提升缓存局部性,tophash 用 1 字节比对替代完整 key 比对,扩容时新老桶并存逐步迁移避免单次卡顿。**并发安全要么 RWMutex 包 map,要么读多写少 + 稳定 key 用 sync.Map**。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 最小代码 |
+| --- | --- | --- |
+| **K→V 关联存储** | 最常见,索引 / 配置 / 缓存 | `users := map[int64]*User{}` |
+| **去重 / 集合** | `map[K]struct{}` 比 `map[K]bool` 省内存 | `seen := map[string]struct{}{}; seen[s] = struct{}{}` |
+| **计数 / 直方图** | 词频 / QPS 分桶 / 状态统计 | `cnt := map[string]int{}; cnt[k]++` |
+| **配置 / 路由查找** | 启动加载,运行只读 | `routes := map[string]Handler{"/a": handlerA}` |
+| **分组聚合** | 按 key 收集 slice | `byCity := map[string][]User{}; byCity[u.City] = append(byCity[u.City], u)` |
+| **enum → 描述映射** | 错误码 / 状态文案 | `msg := map[int]string{0:"OK", 1:"ERR"}` |
+
+**选 map 还是 slice 的判断**:**按 key 随机查 O(1) 用 map;按序遍历 / 小规模(< 几十)用 slice 线性扫更快(缓存友好)**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **并发读写** | `fatal error: concurrent map read and map write`(进程直接退出,recover 救不回) | runtime 在 hmap.flags 检测到 hashWriting + 另一读/写 → throw | `sync.RWMutex` 包装 / `sync.Map` / 分片 map(sharded) |
+| **nil map 写入** | `panic: assignment to entry in nil map` | `var m map[K]V` 只声明未分配 buckets | 写前 `m = make(map[K]V)` |
+| **零值判定不存在 key** | `if m[k] == 0` 把"存在但值为 0"误判成"不存在" | map 读不存在 key 返回类型零值,不报错 | 用 comma-ok:`if v, ok := m[k]; ok { ... }` |
+| **map 元素不可寻址** | `m["a"].N = 2` 编译错误 `cannot assign to struct field m["a"].N in map` | value 是副本,且扩容时内存地址会变 | value 改 `*Struct`,或 `s := m[k]; s.N = 2; m[k] = s` |
+| **range 中取 key/value 地址** | 所有指针指向同一变量,值是最后一次 | `for k, v := range` 的 k/v 是复用变量(Go < 1.22) | 循环内 `k := k; v := v` 拷贝,或升级 Go 1.22+ |
+| **迭代中新增 key** | 新增的 key 是否被遍历**未定义** | spec 明确不保证 | 先收集到 slice,循环外处理;delete 当前 key 是允许的 |
+| **大量删除后内存不释放** | len(m) 几千,RSS 几 GB | delete 只清槽位 + tophash,bucket 数组不缩 | 定期重建:`m2 := make(map[K]V, len(m)); for k,v := range m { m2[k]=v }; m = m2` |
+| **不可比较类型作 key** | 编译错误 `invalid map key type` | key 必须实现 `==`,slice/map/func 不行 | 改 string / array / 可比较 struct;或哈希后用 `[16]byte` |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:map 底层结构?**
+`hmap`(header:count / B / buckets 指针 / hash0 种子 / oldbuckets)+ `bmap` 数组(每个 bucket 存 8 个 K/V + tophash 数组 + overflow 指针)。**K/V 分开连续存**(不是 KVKV)减少 padding、提升缓存。
+
+**Q2:为什么并发读写报 fatal 不是 panic?**
+fatal 由 runtime `throw` 触发,**绕过 defer/recover**,目的是**快速暴露问题**(并发读写会让 map 内部状态彻底损坏,继续跑只会更严重)。设计上为了简化和性能,map 本身不带锁。
+
+**Q3:扩容机制?**
+触发条件二选一:**装载因子 > 6.5(双倍扩容 B+1)** 或 **溢出桶过多(等量扩容 B 不变,重排清理)**。策略是**渐进式迁移**:新老 buckets 并存,每次 GET/SET 顺带搬 1~2 个 bucket,避免单次百万 key STW。
+
+**Q4:迭代为什么无序?**
+**Go 1.0 起故意打乱**:每次 range 随机起点 bucket + 随机起点槽,防止开发者依赖未定义顺序。要顺序就维护一个 `[]key` 切片,或用第三方 orderedmap。
+
+**Q5:sync.Map 适合什么场景?**
+官方文档明确两类:**① 读多写少且 key 集合稳定**、**② 多 goroutine 操作不相交的 key 集合**(每个 G 自己一组 key)。内部 read(atomic 只读)+ dirty(带锁可写)双 map,写多场景比 `RWMutex+map` 慢。
+
+**Q6:怎么安全并发用 map?**
+三档:**① 通用**用 `sync.RWMutex` + map(简单可控);**② 读多写少 + 稳定 key**用 `sync.Map`;**③ 超高并发**用**分片 map**(N 个 shard,每 shard 一把锁,按 hash(key) % N 路由)降低锁竞争。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 map 的 hmap/bmap 结构、tophash 加速、渐进式扩容等源码级内容,**正常面试用不到**,只在被深追时使用。
+
 ## 〇、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）

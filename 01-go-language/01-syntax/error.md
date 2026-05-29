@@ -2,7 +2,90 @@
 
 > Go 错误处理：error 接口 + 值对比，显式返回而非异常；Go 1.13+ 引入 wrap / Is / As 标准化链路
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **error 是返回值不是异常**——内置 `interface{ Error() string }`,Go 鼓励**显式判断 `if err != nil`**,把错误当值传递、包装、比较,而不是用 try/catch 隐藏控制流。
+
+延伸(被追问时再展开):
+
+> 设计哲学是**错误是值(errors are values)**:可被赋值、传递、组合、wrap;Go 1.13+ 标准化了 `%w` 包装链 + `errors.Is/As`,Go 1.20+ 又补了 `errors.Join` 多错误聚合。**panic 不是错误**,只用于"不可恢复"或"程序员 bug"。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 典型例子 |
+| --- | --- | --- |
+| **返回错误** | 函数最后一个返回值是 error | `func Get(id) (*User, error)` |
+| **错误包装(wrap)** | 每层加自己的上下文,保留底层 err | `fmt.Errorf("load user %d: %w", id, err)` |
+| **判断错误类型(Is/As)** | 穿透 wrap 链做值比较 / 类型断言 | `errors.Is(err, sql.ErrNoRows)` / `errors.As(err, &pathErr)` |
+| **哨兵错误(sentinel)** | 包级 `var ErrXxx = errors.New(...)` 暴露给上层判断 | `io.EOF` / `sql.ErrNoRows` / `context.Canceled` |
+| **自定义错误类型** | 需要携带字段(ID / Code / Cause) | `type NotFoundError struct{ Resource string; ID int64 }` |
+| **多错误聚合(Join)** | 批量校验 / 并行任务聚合 | `errors.Join(validateName, validateAge, ...)` |
+
+**选哨兵还是 typed error**:**只需要判断"是不是这个错"用 sentinel + Is**;**需要拿字段(ID / Code / Path)用 typed + As**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **`err == nil` 但 interface 持有 nil 指针** | `return (*MyErr)(nil)` 给 error,`err == nil` 是 false | 接口 = (type, data),type 非 nil 整体就不等 nil | 显式 `return nil`,不要 `return e` 一个 typed nil |
+| **忽略 err(`_`)** | bug 被吞没,生产难排查 | `data, _ := os.ReadFile(...)` 丢错信息 | 用 `errcheck` 静态扫描;明确丢弃要写注释 |
+| **直接对比错误字符串** | `if err.Error() == "not found"` | 文案改一下就失效;不同包同文案误命中 | 用 `errors.Is(err, ErrNotFound)` |
+| **用类型断言而不是 errors.As** | `err.(*MyErr)` 被 wrap 一次就 false | 类型断言不穿透 wrap 链 | 用 `var e *MyErr; errors.As(err, &e)` |
+| **wrap 失误覆盖原始错误** | 用 `%v` 而不是 `%w`,Is/As 失效 | `%v` 只拼字符串,不保留链 | 想包装一定用 `%w`;不想暴露用 `%v` |
+| **不打印堆栈** | 只看到一行"db closed",定位不到现场 | 标准库 error 不带 stack | 入口 `debug.Stack()`,或用 `cockroachdb/errors` |
+| **到处 panic 而不返回 err** | 一个 panic 把整个服务带崩 | panic 不跨 goroutine 传播,每个 g 都要 recover | 业务用 error;panic 只在无法继续时;HTTP middleware 统一 recover |
+| **goroutine 漏 recover** | `go func() { panic(...) }()` 进程 crash | panic 不跨 g,主 g 的 recover 无效 | 每个 goroutine 入口包 `GoSafe`(defer recover) |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:Go 为什么不用异常而用 error 返回值?**
+异常容易**隐藏控制流**——任何函数都可能抛任意类型,调用方靠看文档猜。error 返回值让错误处理**显式**,编译器可强制(`err != nil`),错误是值可传递 / 比较 / 包装。代价是啰嗦,但**可预测性远高于异常**——这是 Go "simplicity > magic"的取舍。
+
+**Q2:errors.Is vs errors.As vs `==` 怎么选?**
+- `==`:**不穿透 wrap**,只在最底层、且明确没 wrap 时能用,生产代码不要用
+- `errors.Is(err, target)`:**值相等比较 + 递归 unwrap**,用于 sentinel error(`io.EOF` / `ErrNotFound`)
+- `errors.As(err, &target)`:**类型断言 + 递归 unwrap**,用于 typed error 取字段(`*os.PathError` 拿 Path)
+
+口诀:**sentinel 用 Is,typed 用 As,永远别用 ==**。
+
+**Q3:`%w` vs `%v` 区别?**
+`%w` **保留错误链**(Errorf 返回的 err 实现了 Unwrap),Is/As 能穿透;`%v` 只是**字符串格式化**,链断了。想暴露底层 err 给上层判断用 `%w`;想隐藏底层(脱敏 / 安全)用 `%v`。`%w` 在一个 Errorf 里只能出现一次(Go 1.20+ 支持多个)。
+
+**Q4:sentinel error vs typed error 怎么选?**
+- **sentinel(`var ErrXxx = errors.New(...)`)**:只需要"是不是这个错"判断;开销小、易传播;**缺点**是全局变量、不能携带上下文
+- **typed error(`type XxxError struct{...}`)**:需要携带字段(ID / Code / 原因);**缺点**是定义成本高、需要 errors.As 配合
+
+**业务原则**:稳定的"分类错误"(NotFound / Forbidden)用 sentinel;**需要在错误里带数据**(哪个资源 / 哪个 ID)用 typed。两者可组合:`type NotFoundError struct{ Resource string }` 自己也定义 `var ErrNotFound = &NotFoundError{}`。
+
+**Q5:为什么 `if err != nil` 这么多?是 Go 的设计缺陷吗?**
+**争议点正反两面**:
+
+- **反方(批评)**:重复啰嗦,业务逻辑被 err 检查淹没;同样代码 Rust 用 `?` 一个字符搞定
+- **正方(辩护)**:**显式优于隐式**——每个 err 都是一个"决策点",强迫程序员思考"这里出错怎么办";异常 / `?` 会让人无脑往上抛,错误处理质量反而下降
+
+**Go 团队立场**:Go 2 提案讨论过 `check/handle`,最终被砍。**核心理念**:错误处理不该被语法糖隐藏,啰嗦是**特性不是 bug**。实践上可以用 wrap + Is/As 减少冗余、用 linter(`errcheck` / `errorlint`)保证质量。
+
+**Q6:panic 何时用?业务能用吗?**
+**只在三种场景**:
+1. **不可恢复**:启动配置缺失、必需依赖初始化失败(数据库连不上)
+2. **程序员 bug**:不可能发生的 case(枚举 switch 走到 default)、不变量被破坏
+3. **库内部约定**:如 `json.Marshal` 遇循环引用、`regexp.MustCompile` 编译失败
+
+**业务逻辑一律用 error**。HTTP 服务端用 middleware 统一 recover + log + 返 500。**坚决反对**用 panic 模拟异常做控制流。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 error 接口设计、wrap 链机制、errors.Is/As 源码、panic/recover 实现、常见踩坑等深度内容。**正常面试用不到**,只在被深追"wrap 链怎么实现 / Is 和 As 源码 / panic 怎么 unwind 栈"时才会用到。
+
+## 六、核心原理
 
 ### 1.1 error 接口
 
@@ -111,7 +194,7 @@ return errors.Join(errs...)  // nil 会被忽略
 
 `errors.Is/As` 对 joined error 依然有效。
 
-## 二、八股速记
+## 七、八股速记
 
 - error 是**接口**，只要实现 `Error() string` 即可
 - **errors.New / fmt.Errorf / 自定义类型**三种创建方式
@@ -122,7 +205,7 @@ return errors.Join(errs...)  // nil 会被忽略
 - recover 必须在 **defer 函数体内直接调用**
 - `err != nil` 检查是 Go 的主流程，别怕啰嗦
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：为什么 Go 不用异常而用 error 返回值？**
 设计哲学差异：
@@ -247,7 +330,7 @@ func validate(u User) error {
 - Go 1.13+ 自己在 Error 返回时用 `runtime.Callers` 采集
 - `debug.Stack()` 打当前完整堆栈（排障用）
 
-## 四、手写实现
+## 九、手写实现
 
 **1. 自定义 error 类型 + errors.As：**
 
@@ -357,7 +440,7 @@ case err != nil:
 }
 ```
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：nil 指针被装成非 nil 接口
 

@@ -2,7 +2,82 @@
 
 > Go 1.18+ 引入：类型参数 + 约束（constraint）+ type set；编译期单态化（部分 GC shape stenciling），不是 Java 擦除式
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **泛型 = Go 1.18+ 的类型参数**——用 `[T any]` 在函数 / 类型上声明,配合**约束 constraint**(本质是 interface + type set)做编译期类型安全;实现机制是 **GC shape stenciling**(同形状类型共享一份代码 + dictionary 查方法),既不是 Java 擦除也不是 C++ 完全模板化。
+
+延伸(被追问时再展开):
+
+> 设计哲学是**编译期确定 vs 运行期动态**的取舍——泛型用在"一份代码多类型"(容器 / Map/Filter),interface 用在"一份代码统一行为"(多态分派)。约束语法 `~T | ~U` 表达 type set,`~` 匹配 underlying type 兼容自定义别名。**method 不能有独立类型参数**(只能用 receiver 上的),这是为了避免接口实现匹配爆炸。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 典型例子 |
+| --- | --- | --- |
+| **通用容器** | 编译期类型安全,避免 any 装箱 | `Stack[T]` / `Queue[T]` / `Set[T comparable]` / `LRU[K,V]` |
+| **通用算法** | 一份代码处理多种元素类型 | `Map[T,U]` / `Filter[T]` / `Reduce[T,U]` / `Contains[T comparable]` |
+| **类型安全的工具函数** | 数值 / 顺序操作复用 | `Min[T Ordered]` / `Max[T Ordered]` / `Sum[T Number]` / `Abs[T]` |
+| **约束接口(comparable)** | map key / 等值比较类型门票 | `map[T]struct{}` 这种 key 必须 comparable |
+| **slice / map 标准库操作** | Go 1.21+ 内置泛型工具 | `slices.Sort` / `slices.Index` / `maps.Keys` / `maps.Clone` |
+| **channel 工具** | 类型安全的 Fan-in / Fan-out | `Merge[T]` / `Broadcast[T]` 合流分流 |
+| **❌ 不适合:业务代码做复杂类型体操** | 多个类型参数 + 嵌套约束,可读性崩盘 | `DoStuff[T any, U comparable, V Ordered, W ~int](...)` 这种就是反模式 |
+
+**判断**:**"先有 2-3 个重复类型的实现,再考虑抽象成泛型"**——不要预先设计。单一类型的简单函数直接写。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **过度抽象** | 简单工具函数也强行泛型,可读性下降 | 把"显技术力"当目标,而非解决具体问题 | 先有 2-3 个重复实现再抽象,不预先设计 |
+| **约束写太宽(any 而非 comparable)** | `func Set[T any]` 拿 T 做 map key 编译错 | any 不支持 == ,map key / set 必须 comparable | map key / 去重场景用 `[T comparable]` |
+| **method 上加独立类型参数** | `func (s *Stack[T]) Map[U any]() *Stack[U]` 编译错 | Go 故意限制:避免接口实现匹配爆炸 | 改顶层泛型函数 `func StackMap[T,U]` |
+| **约束忘记 `~`** | `type Number interface{ int }` ,`type MyInt int` 不匹配 | 不带 `~` 只匹配精确类型,不匹配 underlying type | 业务有自定义类型别名时,约束统一用 `~int \| ~float64` |
+| **类型推断失败需显式** | 返回类型不在参数里时,T 推不出来 | 推断只能从实参类型反推 | 显式 `Map[int, string](...)` 指定类型参数 |
+| **以为泛型可以运行时动态分派** | 想用 `Stack[T]` 存"多种类型"——做不到 | 泛型是编译期确定的,一个实例只对应一种类型 | 真要运行时多态用 interface,不要混用 |
+| **interface 约束滥用造成歧义** | 既写方法集又写 type set,使用方分不清这是约束还是接口 | type set 语法的接口**不能用作普通 interface 值** | 用作约束的 interface 不要混用作运行期接口,文档明确标记 |
+| **泛型代码膨胀** | 大量实例化导致二进制变大 + 编译变慢 | GC shape 分组虽减小膨胀,但仍每形状一份 | 性能不敏感处可退回 interface;热点用泛型 |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:Go 泛型怎么实现的?和 Java/C++ 的区别?**
+**GC shape stenciling**(部分单态化):按"GC 形状"(大小 + 指针布局)分组,同形状类型共享一份编译代码,通过 **dictionary** 在运行期查类型相关信息(方法表 / size)。**不是 Java 擦除**(保留类型信息)、**不是 C++ 完全模板**(不会每个具化都生成代码)。权衡:代码膨胀小,但 dictionary 查找比直接代码略慢。
+
+**Q2:泛型 vs interface 怎么选?**
+**编译期类型安全 + 性能敏感用泛型**(`Min` / `Sum` / 容器),**运行期多态 + 多种实现共存用 interface**(`io.Reader` / `error`)。泛型避免装箱 + 编译期检查;interface 灵活但有动态分派开销。**容器存"多种类型"必须 interface**;**一份代码多类型且类型编译期已知用泛型**。
+
+**Q3:约束 constraint 是什么?**
+约束 = **方法集合 ∩ 类型集合**,本质是 interface。`type Number interface{ ~int | ~float64 }` 用 `|` 表示并集,`~T` 匹配 underlying type 是 T 的所有类型(兼容 `type MyInt int`)。**`comparable`** 是 runtime 内置约束,匹配可 `==` 类型(基本类型 / 指针 / array / 可比较 struct,不含 slice/map/func)。
+
+**Q4:为什么 method 不能有独立类型参数?**
+设计取舍:method 上加类型参数会让**接口实现匹配极其复杂**——要枚举所有类型实例化的方法集才能判断 type 是否实现 interface。Go 团队为保持类型系统简单,故意限制。**变通**:把 method 改成顶层泛型函数 `func StackMap[T,U](s *Stack[T], f func(T)U) *Stack[U]`。
+
+**Q5:泛型对性能影响?**
+- **比 interface 快**:无装箱(堆分配)、无动态分派
+- **比直接代码慢一点**:dictionary lookup(查方法表 / size)
+- **二进制略大**:每个 GC shape 一份代码
+- **编译变慢**:大项目大量泛型可感知
+- 一般够用,**热点路径要 benchmark 验证**,极致性能场景可手动特化
+
+**Q6:什么时候不该用泛型?**
+1. **单一类型的简单函数**——直接写更清晰
+2. **需要运行时多态**——用 interface
+3. **重度反射场景**——反射看到的是实例化后类型,拿不到原始 T
+4. **业务代码做复杂类型体操**——3 个以上类型参数 + 嵌套约束,可读性崩盘
+5. **`comparable` 含 interface 字段的 struct**——Go 1.20 前不允许,即使允许也有运行时 panic 风险
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是泛型的实现机制(GC shape stenciling)、约束 type set、类型推断、限制、踩坑实战等源码级内容。**正常面试用不到**,只在被深追"泛型为什么 GC shape 不是完全模板化 / dictionary 怎么查 / 编译期单态化怎么做"时才用。
+
+## 六、核心原理
 
 ### 1.1 基本语法
 
@@ -123,7 +198,7 @@ Go 用 **GC shape stenciling**：
 - 类型参数**不能用作值字面量**的类型（少数边界情况）
 - 反射对泛型实例的支持有限
 
-## 二、八股速记
+## 七、八股速记
 
 - Go 1.18+ 引入，**类型参数 + 约束 + type set**
 - 约束是接口，可包含方法集合 + 类型集合（`int | float64`）
@@ -135,7 +210,7 @@ Go 用 **GC shape stenciling**：
 - 性能比 interface 抽象快（避免装箱），但比直接代码略慢
 - 常用场景：容器（Stack/Queue）、工具函数（Map/Filter/Reduce）、避免 interface{} 装箱
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：Go 为什么这么晚才引入泛型？**
 设计权衡：
@@ -254,7 +329,7 @@ func Map[T, U any](s []T, f func(T) U) []U {
 
 类型推断会自动从参数推出 T 和 U。
 
-## 四、手写实现
+## 九、手写实现
 
 **1. 泛型容器：**
 
@@ -387,7 +462,7 @@ func (c *LRU[K, V]) Put(k K, v V) {
 }
 ```
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：方法上加类型参数
 

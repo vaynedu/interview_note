@@ -2,7 +2,71 @@
 
 > Go 字符串：不可变字节序列（UTF-8 编码），底层 `{data, len}` 两字段；`[]byte` 转换可能涉及拷贝
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **string 是不可变的只读字节序列**——header 由 `{ptr, len}` 两字段构成,底层按 **UTF-8 编码**存放,赋值 / 传参只拷贝 header,不拷贝底层数组。
+
+延伸(被追问时再展开):
+
+> 它的特别之处是**不可变 + 共享底层数组**——比 slice 少一个 cap 字段,可以安全做 map key、并发读、常量池复用。代价是**修改必须拷贝**(`[]byte(s)` / `string(b)` 都会拷贝),编译器仅对少数模式(map 查找、range、比较字面量)做零拷贝优化。**拼接**用 `strings.Builder` 内部 `[]byte` + unsafe 零拷贝转回 string,避开 `+=` 的 O(n²) 陷阱。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 典型例子 |
+| --- | --- | --- |
+| **文本拼接** | 大量拼接走 Builder 走 `[]byte` 池,不用 `+=` | 日志行组装、SQL 拼装、Markdown 渲染 |
+| **字节转换** | 网络 / 文件 IO 出来是 `[]byte`,业务用 string | `http.Body` 读出来 `string(b)` 给 JSON 解析 |
+| **URL / 路径处理** | `strings.Split` / `path.Join` 切割拼接 | 路由匹配、文件路径规整 |
+| **模板填充** | `fmt.Sprintf` / `text/template` 拼接 | 错误消息、SQL 模板、邮件正文 |
+| **JSON / 配置序列化** | 序列化产物是 string,反序列化输入是 string | `json.Marshal` → string、配置文件解析 |
+| **map key / 集合去重** | string 不可变 + 可哈希,天然适合做 key | URL 去重、用户 ID 索引、缓存键 |
+
+**选 string 还是 `[]byte` 的判断**:**只读 / 共享 / 做 key → string**;**频繁修改 / IO 缓冲 / 大块拼接 → `[]byte`**(最后再 `string()` 一次)。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **`+=` 循环拼接性能差** | 拼 1 万个 10 字节 string 几十 ms | 每次 `+=` 都分配新底层数组 + 拷贝,O(n²) | 用 `strings.Builder` + `Grow(n)` 预分配,或 `strings.Join` |
+| **`[]byte(s)` / `string(b)` 触发拷贝** | 热路径 CPU 爆 / GC 压力大 | string 不可变 + []byte 可变,语义安全必须拷贝 | 编译器零拷贝场景(map 查找 / range / 字面量比较)优先;极致用 `unsafe.String` / `unsafe.Slice` |
+| **range rune vs `s[i]` byte 混淆** | 中文 `s[0]` 拿到 0xE4 不是 '你' | `s[i]` 是字节,`range s` 才按 rune 解码 UTF-8 | 取字符用 `[]rune(s)[i]` 或 `range`,索引位置注意是字节偏移 |
+| **字符串切片留住大底层数组** | `huge[0:10]` 让 1GB 数组无法 GC | `s[i:j]` 共享底层数据,只是新 header | `string([]byte(huge[0:10]))` 强拷贝切断引用 |
+| **`string(int)` 误用** | `string(65)` 得 "A",不是 "65" | int 被当 rune 转 string | 整数转字符串用 `strconv.Itoa` / `strconv.FormatInt`,Go 1.15+ vet 会告警 |
+| **正则替代 `strings.Contains` 性能差** | 简单子串匹配用 regexp 慢 10 倍以上 | regexp 要编译 + 走 NFA / DFA,常数项大 | 固定字面量用 `strings.Contains` / `strings.Index`;正则仅在真需要模式时 |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:string 为什么不可变?怎么做到的?**
+**语言层**:没有暴露任何修改 string 内容的 API(`s[i] = x` 编译报错),`[]byte(s)` 会拷贝隔离;**运行时层**:底层字节数组通常在**只读段**或编译期常量池,即使 unsafe 改了也是 UB。不可变带来三个好处:**可做 map key、并发安全读、可共享底层数组**。
+
+**Q2:string 的 header 结构?和 slice 有什么区别?**
+`stringStruct{ str unsafe.Pointer, len int }` **两个字**(16 字节,64 位机器);slice 是 `{ ptr, len, cap }` 三个字。少一个 cap 是因为 string 不可变、不会扩容。所以 string 赋值 / 传参只拷贝 16 字节 header,不动底层。
+
+**Q3:`string ↔ []byte` 转换何时拷贝、何时不拷贝?**
+**默认都拷贝**(语义要求:string 不可变 vs []byte 可变,共享会破坏不变性)。**编译器零拷贝优化**:`m[string(b)]` map 查找、`for _, c := range []byte(s)`、`string(b) == "literal"` 比较。**手动零拷贝**:`unsafe.String(unsafe.SliceData(b), len(b))` / `unsafe.Slice(unsafe.StringData(s), len(s))`,但要保证之后不再修改源,否则 UB。
+
+**Q4:rune 和 byte 区别?**
+`byte = uint8`,1 字节,表示一个 UTF-8 字节;`rune = int32`,4 字节,表示一个 Unicode 码点(完整字符)。`len(s)` 是字节数,`utf8.RuneCountInString(s)` 才是字符数。中文一个汉字 UTF-8 占 3 字节(1 rune = 3 byte)。
+
+**Q5:`strings.Builder` 怎么避免拷贝?和 `bytes.Buffer` 什么区别?**
+Builder 内部维护一个 `[]byte`,Write 系列就是 append;最后 `String()` 用 **`unsafe.String`** 把 []byte **零拷贝**当 string 返回(因为 Builder 保证之后 []byte 不再被外部改)。和 Buffer 区别:**Builder 禁止值拷贝**(go vet 报错,保证 []byte 不被外泄)、`String()` 零拷贝(Buffer 的 `String()` 要拷贝)、**只写不读**(Buffer 是双向的)。构造 string 用 Builder,字节流 IO 用 Buffer。
+
+**Q6:字符串比较是 O(1) 还是 O(n)?**
+**O(n)**(n = min(len1, len2))。先比 len(常数时间快速短路),再逐字节比内容。**例外**:**编译期常量字符串**可能被常量池去重,运行时是同一指针,但语义上仍按 O(n) 思考;`==` 不会做指针快捷判断(Go 规范要求按值比较)。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 string 的底层 header 结构、与 []byte 转换的拷贝 / 零拷贝细节、`strings.Builder` 的 unsafe 实现、UTF-8 编码、切片内存驻留等源码级内容。**正常面试用不到**,只在被深追"string header 怎么布局 / Builder 怎么零拷贝 / 切片为什么不释放内存"时才会用到。
+
+## 六、核心原理
 
 ### 1.1 底层结构
 
@@ -92,7 +156,7 @@ s := strings.Join(parts, "")
 
 `strings.Builder` 的关键：`String()` 方法用 `unsafe.Pointer` 把内部 `[]byte` 转成 string 而不拷贝（因为 Builder 保证 []byte 不再被修改）。
 
-## 二、八股速记
+## 七、八股速记
 
 - 字符串 = `{ptr, len}` 两字段，**不可变**
 - `len(s)` 是**字节数**，不是字符数
@@ -103,7 +167,7 @@ s := strings.Join(parts, "")
 - `s == t` 比较先比 len 再比内容，O(len)
 - 字符串的切片 `s[i:j]` 共享底层数据（零拷贝），小心大字符串留住大 byte 数组
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：string 是值类型还是引用类型？**
 官方说法是**值类型**（值传递，赋值复制的是 header）。但 header 里的指针指向只读的底层字节数组，多个 string 可共享。行为上既不是纯值类型（共享底层）也不是引用类型（不能修改）。
@@ -166,7 +230,7 @@ small := huge[0:10]         // 共享底层 1GB 数据
 
 **修复**：`small := string([]byte(huge[0:10]))` 强制拷贝。
 
-## 四、手写实现
+## 九、手写实现
 
 **1. 反转字符串（处理 UTF-8）：**
 
@@ -230,7 +294,7 @@ func bytesToString(b []byte) string {
 
 > ⚠️ 使用 `unsafe` 转换必须保证生命周期和不变性，否则程序行为未定义。只在热点路径用，普通代码不要这么搞。
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：以为 len 是字符数
 

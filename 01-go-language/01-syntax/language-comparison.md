@@ -2,6 +2,28 @@
 
 > 面试里问 Go 和 Java/C++ 的区别，不是考语法表格，而是考语言设计取舍：复杂抽象、运行时、并发、错误处理和工程效率。
 
+## 〇、一句话总结（背诵版）
+
+Go 的设计哲学是**简单显式 + 组合优于继承 + 原生并发 + 工程效率优先**，刻意减少语言核心复杂度（无继承、无泛型异常、无重载）。和 Java/C++ 的本质差异不在语法，而在"是否愿意为了团队协作和编译速度，牺牲语言表达力"——Go 选择更小的语言核心，把复杂度留给业务而不是语言本身。
+
+## 〇、面试如何回答（口语模板）
+
+**Q1：Go 和 Java 最大的区别是什么？**
+
+A：三点。第一，Go 没有 class 和继承，只有 struct 和组合，通过 interface 隐式实现来做多态；第二，Go 用 error 返回值代替异常，错误处理是显式的而不是隐藏在调用栈里；第三，Go 原生支持 goroutine 和 channel，并发是语言级特性而不是库。本质上 Go 是为"大团队 + 快编译 + 简单部署"设计的，Java 是为"企业级框架 + JVM 生态"设计的。
+
+**Q2：Go 是面向对象语言吗？**
+
+A：不完全是。Go 有面向对象的"接口 + 方法"，但没有 OOP 的"继承 + class"。Go 的做法是用 struct embedding 做组合，用 interface 隐式实现做多态——封装、组合、多态三个能力都有，但刻意去掉了继承。设计者认为继承是大型项目的复杂度来源，组合更灵活也更显式。
+
+**Q3：Go 为什么没有继承？**
+
+A：因为继承会带来"父子类紧耦合 + 多继承菱形问题 + 重写覆盖难追踪"等复杂度，而这些问题在大型项目里成本极高。Go 用 struct embedding（组合）+ interface 隐式实现来覆盖继承的两个核心场景：代码复用用组合，多态用接口。这样既保留了能力，又避免了继承层级带来的耦合。
+
+**Q4：Go 适合什么场景，不适合什么？**
+
+A：适合**高并发后端服务、云原生基础设施（Docker/K8s/etcd）、CLI 工具、微服务**——这些场景需要简单部署、快速编译、原生并发。不适合**复杂业务建模（缺泛型表达力，1.18 之后改善但仍弱）、GUI 桌面应用、高性能数值计算（不如 C++）、需要 JVM 生态的企业应用**。一句话：Go 是"系统编程的简化版 + Web 后端的现代版"。
+
 ## 一、一句话总结
 
 ```text
@@ -362,7 +384,153 @@ Go：
 - 开发效率和部署简单。
 - 适合微服务、网关、云原生、基础设施。
 
-## 八、常见面试题
+## 八、对象生命周期对比(C / C++ / Go)
+
+> 这一节解释**为什么 Go 程序员"不用关心内存,但要关心 goroutine 和 Close"**——本质是三种语言在"什么时候释放"上选了完全不同的取舍。
+
+### 8.1 一句话定位
+
+| 语言 | 释放策略 | 心智模型 |
+| --- | --- | --- |
+| **C** | **手动 `free`** | 全靠纪律,UAF / leak / double-free 全靠人盯 |
+| **C++** | **RAII + 智能指针(析构是确定的)** | 对象出作用域,**编译期插入析构调用** |
+| **Go** | **GC(内存)+ defer(资源)** | 内存不用管;**外部资源仍要 `defer xxx.Close()`** |
+
+> **关键认知**:Go 是"**用 GC 解放程序员管内存,但不解放程序员管资源**"——文件 / 锁 / 连接 / goroutine **不会被 GC 兜底释放**。
+
+### 8.2 多维度对比表
+
+| 维度 | C | C++ | **Go** |
+| --- | --- | --- | --- |
+| 栈/堆决策 | 程序员显式(`Widget w` vs `malloc`) | 程序员显式(`Widget w` vs `new`) | **编译器逃逸分析自动决定** |
+| 内存释放 | 手动 `free` | 析构函数 / `unique_ptr` / `shared_ptr` | **三色标记并发 GC** |
+| 释放时机 | 显式调用那一刻 | **确定性**(作用域 `}` 那一刻) | **不确定**(下一次 GC 周期) |
+| 异常 / panic 安全 | goto cleanup 手写 | **栈展开自动调析构** | **defer 自动执行**(panic 也走 defer) |
+| 外部资源 | 自己 fopen/fclose | RAII 包一层 → 自动 | **`defer Close()` 手动**(GC 不管) |
+| 所有权语义 | 文档约定 | **类型系统**(unique/shared/weak) | **无所有权**,全部共享 + GC 兜底 |
+| 共享所有权 | refcount 自己写 | `shared_ptr`(atomic refcount) | **GC 自然支持** |
+| 循环引用 | 自己防 | `shared_ptr` 循环会泄漏 → `weak_ptr` | **GC 标记可达性,循环引用不泄漏** |
+| 并发安全 | 自觉 | 自觉 | **race detector + channel 范式** |
+| 性能开销 | **0**(最快) | **0**(零成本抽象) | **GC 暂停 < 1ms + 写屏障开销** |
+| 心智成本 | 中(全是坑) | **重**(move / Rule of 5 / 模板) | **轻**(GC + defer 两板斧) |
+| 典型 bug | UAF / 泄漏 / double-free | 循环引用 / 析构抛异常 / `new[]` 配 `delete` | **goroutine 泄漏** / channel 不关 |
+
+### 8.3 同一个场景三种写法
+
+**场景**:打开文件 → 读内容 → 自动释放
+
+```c
+// C — 手动配对 + goto cleanup
+int read_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char *buf = malloc(4096);
+    if (!buf) { fclose(f); return -1; }
+    // ... 业务 ...
+    free(buf);
+    fclose(f);
+    return 0;
+}
+```
+
+```cpp
+// C++ — RAII,出作用域自动释放(异常也安全)
+int read_file(const std::string& path) {
+    std::ifstream f(path);              // 析构关闭
+    std::vector<char> buf(4096);        // 析构 free
+    // ... 业务 ...
+    return 0;
+}   // }  ← buf 析构 → f 析构(逆序)
+```
+
+```go
+// Go — defer 显式注册,函数返回时执行
+func ReadFile(path string) error {
+    f, err := os.Open(path)
+    if err != nil { return err }
+    defer f.Close()                     // 必须手写;GC 不会及时关 fd
+    buf := make([]byte, 4096)           // GC 管,不用 free
+    // ... 业务 ...
+    return nil
+}
+```
+
+**对比要点**:
+- C 显式三步,异常路径要 goto
+- C++ 零代码,作用域结束**确定性**析构
+- Go 中间路线:**内存自动**(`buf` 不用 free),**资源显式**(`f.Close()` 必须 defer)
+
+### 8.4 协作时序(典型 HTTP 请求里的生命周期)
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Go as Go runtime
+    participant GC
+    participant OS
+
+    Caller->>Go: resp, _ := http.Get(url)
+    Go->>OS: 建 TCP 连接(fd)
+    Go->>Go: resp 对象在堆(逃逸)
+    Caller->>Caller: defer resp.Body.Close()
+    Note over Caller: 业务读 body...
+    Caller->>OS: defer 触发 → Body.Close() → 归还连接到 keepalive 池
+    Note over Caller: 函数返回
+    Caller-->>Go: resp 不再被引用
+    Note over GC: 下一次 GC 周期才回收 resp 对象
+    GC->>Go: 标记 resp 不可达 → mspan 归还
+```
+
+**关键**:**fd / TCP 连接由 `Close()` 立刻释放**(同步),**resp 结构体内存由 GC 异步回收**(可能延迟几百 ms)。把这两件事混为一谈是 Go 内存泄漏的最常见根源。
+
+### 8.5 缺一不可:Go 为什么不能只靠 GC
+
+假设 Go **只有 GC 没有 defer**:
+
+| 场景 | 后果 |
+| --- | --- |
+| `os.Open` 后不调 Close | fd 累积 → `too many open files`(GC 触发不及时,可能几秒后才 finalizer) |
+| `mu.Lock()` 后不 Unlock | 锁永久持有,其他 G 卡死(GC 看不到 mu 引用语义) |
+| `db.Conn` 不归还 | 连接池打满,后续请求阻塞 |
+| HTTP body 不 Close | 连接泄漏 + 后台 G 泄漏 |
+
+→ **GC 解决不了"资源时效性"问题**。`runtime.SetFinalizer` 看似能兜底,但**触发时机完全不确定**(可能永不触发),官方明确"不要依赖"。
+
+### 8.6 怎么选(语言层面)
+
+| 业务诉求 | 选谁 |
+| --- | --- |
+| 极致性能 + 极致控制(OS 内核、嵌入式、HFT)| **C / Rust** |
+| 复杂业务 + 性能敏感 + 团队能驾驭 RAII | **C++ / Rust** |
+| 后端服务 + 微服务 + 云原生 + **工程效率优先** | **Go**(GC 心智成本最低) |
+| 编译期内存安全 + 零成本抽象 | **Rust**(borrow checker 取代 GC) |
+
+### 8.7 资深表达
+
+> "Go 的对象生命周期是**三层协作**:
+>
+> 1. **逃逸分析(编译期)**——决定栈/堆,栈分配几乎零成本
+> 2. **GC(运行时)**——三色标记 + 写屏障,STW < 1ms,但**释放时机不确定**
+> 3. **defer + ctx(程序员)**——外部资源(fd / 锁 / 连接 / goroutine)必须显式释放
+>
+> 和 C++ 对比:**C++ RAII 的析构是确定性的**(作用域 `}` 那一刻),**Go GC 是不确定性的**(下一次周期)——这就是为什么 Go 仍需要 `defer Close()`,而 C++ 可以让 `unique_ptr` 一统江湖。
+>
+> **Go 最常见的'生命周期 bug'不是内存泄漏**(GC 兜底),**而是 goroutine 泄漏**——channel 不关、ctx 不传、select 没退出分支是三大元凶。每个 `go func()` 都必须想清楚怎么退出。
+>
+> 三种语言的取舍可以概括为:**C 给你刀,什么都能切但容易切到手;C++ 给你刀套,栈出口自动归鞘;Go 给你 GC 园丁,但水管子还是要自己关。**"
+
+### 8.8 一句话总结
+
+> **C 手动 / C++ RAII 确定性析构 / Go GC + defer**——三条路线代表了"控制力 vs 心智成本"光谱上的三个点;
+>
+> - **C++ 的 RAII 是确定性的**(作用域结束析构),**Go 的 GC 是不确定性的**(下一次周期)
+> - **Go GC 只管内存**,fd / 锁 / 连接 / goroutine 必须 `defer Close()`
+> - **goroutine 泄漏比内存泄漏更常见**,这是 Go 独有的生命周期问题
+> - 详见 [../03-runtime/escape-analysis.md](../03-runtime/escape-analysis.md) / [gc.md](../03-runtime/gc.md) / [goroutine-leak.md](../03-runtime/goroutine-leak.md)
+
+---
+
+## 九、常见面试题
 
 ### Go 是面向对象语言吗？
 

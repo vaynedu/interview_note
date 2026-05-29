@@ -2,6 +2,73 @@
 
 > Go 切片：底层数组 + 长度 + 容量的三元组；引用类型，传递的是 header 副本但共享底层数组
 
+## 一、一句话总结(背诵版)
+
+> **slice 是 Go 中对底层数组的轻量级动态视图**——header 三元组 `{*array, len, cap}`,**值传递但共享底层数组**;常见场景包括**动态收集结果、子切片视图、参数传递避免拷贝、预分配优化、配合 append 构建结果集**。
+
+延伸(被追问时再展开):
+
+> slice 真正的"坑"集中在三个点:**append 可能扩容也可能不扩容**(返回值必须接)、**子切片与原 slice 共享底层数组**(改一个影响另一个)、**header 是值拷贝**(函数内 append 不影响外部 len)。理解这三点就理解了 80% 的 slice 面试题。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 最小代码 |
+| --- | --- | --- |
+| **动态收集结果** | 边遍历边攒,长度未知 | `res := []T{}; for ... { res = append(res, x) }` |
+| **预分配优化** | 已知大致容量,一次到位免扩容 | `res := make([]T, 0, n)` |
+| **子切片视图** | 不拷贝复用底层数组的某一段 | `sub := s[i:j]` |
+| **参数传递** | 传 header 副本(24 字节),共享底层 | `func f(s []T)`,内部改元素影响外部 |
+| **函数返回新 slice** | append 可能扩容,必须返回 | `func add(s []T, x T) []T { return append(s, x) }` |
+| **隔离写入污染** | 三索引切片强制后续 append 扩容 | `sub := s[i:j:j]` 锁死 cap |
+| **批量删除 / 过滤** | 用同一底层数组原地过滤 | `s = s[:0]; for _, v := range src { if ok(v) { s = append(s, v) } }` |
+
+**判断要不要 copy**:**只要 caller 和 callee 谁都可能继续 append,就要 copy 或用三索引**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **append 不接返回值** | `append(s, x)` 写完外部 s 长度没变 | append 返回的是新 header,旧 header 的 len 不变 | `s = append(s, x)` 必须赋值回去 |
+| **子切片污染原数组** | `b := a[:2]; b = append(b, 99)` 之后 `a[2]` 被改成 99 | b 与 a 共享底层,cap 还够时 append 直接写底层数组 | 用三索引 `b := a[:2:2]` 锁死 cap,或 `copy` 出新 slice |
+| **大 slice 截取小段内存泄漏** | 读 100MB 文件后只留 10 字节,整块内存不释放 | 小 slice 的 array 指针仍指向 100MB 数组,GC 无法回收 | `small := make([]T, n); copy(small, big[i:j])` |
+| **并发 append 数据竞争** | 多 goroutine `append(s, x)` 出现元素丢失 / panic | slice 非并发安全,len 和底层数组写都不是原子 | 加 `sync.Mutex`,或用 channel 收集后单 G 合并 |
+| **range 取 &v 都指向同一变量(Go 1.22 前)** | `ptrs = append(ptrs, &v)` 后所有指针指向最后一个值 | 循环变量 v 每轮复用同一地址(Go 1.22 才改) | Go 1.22 前显式 `v := v` 创副本;Go 1.22+ 行为已修正 |
+| **nil slice 与 empty slice 混用** | `s == nil` 判断失败但 `len(s) == 0` | `[]T{}` 和 `make([]T, 0)` 不是 nil,只有 `var s []T` 是 nil | 判空统一用 `len(s) == 0`,JSON 序列化才区分(nil → null,empty → []) |
+| **循环里 append 不预分配** | 10w 次 append 触发多次扩容 + 拷贝,性能差 | 默认 cap=0,翻倍扩容期间反复 malloc + copy | `make([]T, 0, expectedSize)` 一次到位 |
+| **以为 slice 是引用类型** | 函数内 `s = append(s, x)` 后,外部 s 长度还是旧的 | slice 是值类型(传 header 副本),append 改的是局部 header | 函数返回新 slice,或传 `*[]T` |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:slice 和数组的区别?**
+数组是**值类型**,长度是类型的一部分(`[3]int` 和 `[4]int` 是不同类型),传参全拷贝。slice 是**对底层数组的描述符**(header 三元组),长度运行时可变,传参只拷贝 24 字节 header,但共享底层数组。
+
+**Q2:slice header 是什么?**
+`{array unsafe.Pointer, len int, cap int}` 三元组,64 位下 24 字节。array 指向底层数组,len 是当前长度,cap 是从 array 起到底层数组末尾的容量。
+
+**Q3:append 的扩容规则?**
+Go 1.18+:cap < 256 翻倍,cap ≥ 256 按 `oldCap + (oldCap + 3*256)/4`(约 1.25x,平滑过渡)。Go 1.17 及之前是 1024 阈值的 2x/1.25x。最终还要按内存分配器 size class 对齐,实际 cap 可能略大。
+
+**Q4:append 的潜在 bug?**
+两个:一是**没接返回值**——扩容后旧 header 看不到新底层数组;二是**子切片共享底层**——`b := a[:2]; b = append(b, x)` 在 cap 够时直接写到 a 的对应位置,污染原 slice。
+
+**Q5:为什么传 slice 也"像引用"?**
+header 是值拷贝,但 header 里的 array 指针指向同一底层数组,所以**改元素**外部看得到(共享底层),**改长度**外部看不到(header 是副本)。
+
+**Q6:如何强制脱离底层数组共享?**
+两种方式:一是**三索引切片** `s[i:j:j]` 锁死 cap,后续 append 必触发扩容分配新数组;二是**显式 copy**:`dst := make([]T, len(src)); copy(dst, src)`。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 slice 的 header 结构、扩容算法、内存布局等源码级内容,**正常面试用不到**,只在被深追"growslice 怎么算 newcap / 三索引底层怎么实现"时才会用到。
+
 ## 〇、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）

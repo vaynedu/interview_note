@@ -2,7 +2,71 @@
 
 > Go 结构体：值类型，内存连续，支持组合、tag、内存对齐；Go 没有继承，靠 embedding 实现复用
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **struct 是字段聚合的值类型**——Go 没有 class,**用 struct + method + embedding** 替代继承,字段连续布局、零值可用、tag 承载元信息。
+
+延伸(被追问时再展开):
+
+> struct **值语义**(赋值/传参整体拷贝),内存按字段顺序连续排列、按最大字段对齐补 padding。**没有 extends**,用 **embedding 提升字段和方法**实现"组合优于继承"。**零值可用**是 Go 惯用法(`sync.Mutex` / `bytes.Buffer` 都不需要 New)。**tag** 是反射元数据,由 json / db / validate 等库按需解析。**空 struct `struct{}` 是 0 字节**,常做 set 或 channel 信号。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+| 场景 | 一句话 | 典型例子 |
+| --- | --- | --- |
+| **数据模型(ORM / JSON)** | struct + tag 描述持久化 / 序列化结构 | `type User struct { ID int64 `json:"id" db:"user_id"` }` |
+| **配置对象** | 聚合一组参数,零值可用或 functional options | `http.Server{Addr, Handler, ReadTimeout}` 字段全可选 |
+| **自定义错误类型** | 实现 `Error() string` 即可作为 error 返回 | `type NotFoundErr struct { Key string }` + 类型断言识别 |
+| **embedding 组合复用** | 嵌入实现"is-a",字段方法自动提升 | `type Service struct { *Logger; name string }`——直接 `s.Log(...)` |
+| **tag 标记元信息** | 反射读取做映射 / 校验 / 文档生成 | `validate:"required,email"` / `swagger:"description=用户ID"` |
+| **零值可用** | 不写 New 构造,直接 `var x T` 用 | `var mu sync.Mutex; mu.Lock()` / `var b bytes.Buffer` |
+
+**选 struct vs map**:**字段固定 / 类型异构 / 编译期检查** → struct;**动态 key / 同质** → map。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **值 / 指针接收者混用** | 同一类型一半方法值接收、一半指针接收,方法集不一致 | 值 T 方法集不含指针方法,赋接口 / 提升时报错 | **一个类型方法接收者全一致**,通常全用 `*T` |
+| **大 struct 当值传递** | 函数传参整体拷贝,栈拷贝开销 + GC 扫描成本 | struct 是值类型,几十字段或含数组时拷贝慢 | 大 struct 一律传指针 `*T` |
+| **字段顺序导致内存膨胀** | `[bool, int64, bool]` = 24B,重排成 16B | 编译器按字段对齐补 padding,小字段散落浪费 | **大字段在前小字段在后**;百万级跑 `fieldalignment` |
+| **embedding 同名字段无报错** | 两个嵌入字段都有 `Name`,`c.Name` 编译错(就近原则不报错时是 ambiguous) | Go 用就近原则,同层冲突才报 ambiguous | 外层显式定义同名字段覆盖,或 `c.A.Name` 显式访问 |
+| **tag 拼写错误不报错** | `json:"name"; db:"x"`(分号)运行时读不到 | tag 是字符串,编译期不校验语义 | 上线前跑 `go vet`(Go 1.13+ 检查 json/xml tag) |
+| **含 sync.Mutex 被复制** | `c2 := c1` 复制了锁,保护的是不同字段 | mutex 必须保持唯一地址 | 含锁 struct 一律用 `*T`;`go vet` 会报 copies lock value |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:struct 内存对齐规则?**
+**字段按声明顺序连续排列**,每个字段地址要满足其对齐要求(amd64:int64/指针/string/slice 8B,int32 4B,bool/byte 1B),不满足时**前面补 padding**;**struct 整体对齐 = 最大字段对齐**,末尾也可能补齐。优化:大字段在前 → padding 最少。工具:`unsafe.Sizeof` 验证、`fieldalignment` 自动重排。
+
+**Q2:embedding 和继承的区别?**
+embedding **不是继承,是字段提升 + 语法糖**。嵌入类型的字段和方法**自动提升到外层**,但**类型关系是组合不是父子**——`Dog` 不是 `Animal` 的子类,无法把 `Dog` 当 `Animal` 传(除非 Animal 是接口)。Go idiom:**组合优于继承**,通过 embedding 复用代码、通过接口实现多态。
+
+**Q3:空 struct `struct{}` 有什么用?**
+**size = 0,不占内存**。三大场景:① **set 集合** `map[string]struct{}{}` 比 `map[string]bool` 省内存;② **channel 信号** `chan struct{}` 只传递事件不携带数据(如 `done` 信号);③ **方法挂载占位** `type Service struct{}` 把方法挂在零字节类型上。所有 `struct{}` 实例**共享同一地址**(runtime.zerobase)。
+
+**Q4:struct 能用 `==` 比较吗?**
+**所有字段都可比较** → struct 可比较,可作 map key。**含 slice / map / func** 字段 → 不可比较(编译错)。**指针字段可比较**(比较地址);**array 可比较**(元素可比较时,逐个比)。技巧:不可比较的 struct 想当 key,可以序列化成 string 或自定义 hash。
+
+**Q5:struct tag 怎么解析?**
+**tag 是反引号字符串**,通过 reflect 在运行期读取:`reflect.TypeOf(v).Field(i).Tag.Get("json")`。**编译期不校验语义**,拼写错只能 `go vet` 或运行时发现。json / gorm / validate 等库都自带 tag 解析逻辑,**性能瓶颈**:首次反射慢,生产用 `sync.Map` 缓存字段 → tag 映射,或用 codegen(ffjson / easyjson)绕开反射。
+
+**Q6:如何在零拷贝场景传 struct?**
+**传指针 `*T`**:函数签名 `func f(u *User)`,只拷贝 8 字节指针,不拷贝结构体本身。注意三点:① **逃逸到堆**——指针被外部持有时编译器把 struct 分配到堆,有 GC 压力;② **并发安全**——多协程持有同一指针需要锁;③ **nil 检查**——指针参数比值参数多一层 nil 风险。极致场景:用 `unsafe.Pointer` + 内存池(sync.Pool)复用 struct,常见于 RPC 框架解码路径。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 struct 的内存布局、对齐规则、embedding 方法集提升、tag 解析、零值机制、拷贝语义等源码级内容。**正常面试用不到**,只在被深追"struct 内存怎么算 / embedding 方法冲突怎么解析 / 零值为什么可用"时才会用到。
+
+## 六、核心原理
 
 ### 1.1 值类型与内存布局
 
@@ -127,7 +191,7 @@ type Bad struct { S []int }
 // m := map[Bad]string{}  // 编译错误
 ```
 
-## 二、八股速记
+## 七、八股速记
 
 - struct 是**值类型**，赋值传参都拷贝
 - 内存**连续布局**，字段顺序影响 size（大字段在前节省 padding）
@@ -138,7 +202,7 @@ type Bad struct { S []int }
 - 空 struct 是 0 字节，可做 set 或信号
 - 全可比较字段才可比较，才能当 map key
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：struct 是值类型，那传个大 struct 给函数不就拷贝一份？**
 是的，所以大 struct（几十字段或含大数组）通常**传指针**：
@@ -257,7 +321,7 @@ var sb strings.Builder; sb.WriteString("x")  // 直接用
 
 小 struct 没有 mutex 时值接收者更简单，性能甚至更好（避免指针逃逸）。
 
-## 四、手写实现
+## 九、手写实现
 
 **1. 按字段大小排序优化内存：**
 
@@ -327,7 +391,7 @@ b, _ := json.Marshal(User{ID: 1, Name: "Alice"})
 // {"id":1,"name":"Alice"}
 ```
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：值接收者方法修改不生效
 
