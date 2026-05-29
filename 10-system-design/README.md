@@ -45,7 +45,8 @@
 | [21-shopping-cart.md](21-shopping-cart.md) | 购物车系统(京东/淘宝)：Redis Hash 主存、价格库存实时聚合、未登录合并、按店拆单 |
 | [22-red-packet-system.md](22-red-packet-system.md) | 抢红包系统(微信/支付宝)：4S 法样板篇 — 预拆 + LPOP 抢 + MQ 异步入账 + 对账兜底 |
 | [23-id-generator-system-4s.md](23-id-generator-system-4s.md) | **发号器系统(4S 版)**：用 4S 重推分布式 ID 发号器(基础设施样本) — 双 Buffer 号段池 + Snowflake 双模 + 三级降级 + 防业务量泄露；与 [06-distributed/05-id-generation.md](../06-distributed/05-id-generation.md) 形成"系统设计视角 vs 原理深度"对比 |
-| [24-order-system-4s.md](24-order-system-4s.md) | **订单系统(4S 版)**：抖音电商日 2000 万单样板 — **三大核心考点**：user_id 分片 + 商家维度 ES 异构索引 / order_id 基因法(内嵌分片定位，1000× 查询性能差异)/ 三方订单 ID 映射表 + T+1 对账兜底；状态机不可逆 + 大促 200 倍削峰；与 [13b-payment-system-4s.md](13b-payment-system-4s.md) / [15-inventory-system.md](15-inventory-system.md) 上下游联动 |
+| [24-order-system.md](24-order-system.md) | 订单系统(10 步框架版)：抖音电商日 2000 万单样板 — 按 [01-design-framework.md](01-design-framework.md) 10 步通用流程展开，**教学讲解视角**（需求/容量/对象/架构/链路/数据/一致性/瓶颈/取舍/演进），适合第一次学订单系统 / 写工程文档 |
+| [24b-order-system-4s.md](24b-order-system-4s.md) | **订单系统(4S 版)**：抖音电商日 2000 万单样板 — **三大核心考点**：user_id 分片 + 商家维度 ES 异构索引 / order_id 基因法(内嵌分片定位，1000× 查询性能差异)/ 三方订单 ID 映射表 + T+1 对账兜底；状态机不可逆 + 大促 200 倍削峰；与 [13b-payment-system-4s.md](13b-payment-system-4s.md) / [15-inventory-system.md](15-inventory-system.md) 上下游联动；与 [24-order-system.md](24-order-system.md) 形成"教学讲解 vs 面试答题"双版本 |
 
 ## 高频题速览
 
