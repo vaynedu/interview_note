@@ -1089,3 +1089,242 @@ sequenceDiagram
 | 业界采用 | 中小项目 | 早期方案 | **生产稳态** |
 
 **结论**:延迟消息主导 + 定时扫描兜底,是各大电商生产环境的事实标准——抖音电商、淘宝、京东、拼多多基本都是这个套路。
+
+## 附录 C：Redis Cluster 热点 SKU 解决方案
+
+> 附录 A 假设 Redis 单实例扛得住,但生产中**大促爆款 SKU 单 key QPS 会突破 10w**——Redis Cluster 按 key hash 分片,单 key 永远只在单节点,扩容集群对单 SKU 无意义。本附录系统讲清「热点 SKU 假售罄」的成因和三种破解方案。
+
+### C.1 问题本质:Redis Cluster 单 key 瓶颈
+
+```text
+集群 32 节点 × 单节点 10w QPS = 32w QPS 理论上限
+但 stock:sku_123 在 hash slot 后只落 1 个节点
+→ 这个 SKU 永远只能用 10w QPS 处理
+→ 大促时 100w QPS 涌来,90w 直接被拒绝
+→ 用户看到「已售罄」,但真实库存还有 999/1000
+```
+
+**核心矛盾**:Redis Cluster 按 key 做 hash 分片,**单 key 永远只在单节点**,集群扩容对单 SKU 无意义。
+
+### C.2 三种破解方案对比
+
+| 方案 | 思路 | 集群扩展性 | 适合场景 |
+| --- | --- | --- | --- |
+| **A. 库存分桶** | 1000 库存拆成 N 个 Bucket | 线性扩展 | 大促普通爆款 |
+| **B. 本地缓存预扣** | 网关层预分配,LocalCache 扣 | 完全无中心 | 秒杀超大爆款 |
+| **C. 分层扣减** | 双层 Redis(L1 网关 + L2 中心) | 中等扩展 | 折中方案 |
+
+### C.3 方案 A:库存分桶(主流推荐)
+
+#### 核心思路
+
+把 1000 库存拆成 10 个 bucket 各 100,用 hash tag 让它们落到**不同节点**:
+
+```text
+原方案(单点瓶颈):
+  stock:sku_123  → 节点 5,只能 10w QPS
+
+分桶方案(线性扩展):
+  stock:{sku_123_b0} → 节点 5,    bucket 0 库存 100
+  stock:{sku_123_b1} → 节点 12,   bucket 1 库存 100
+  stock:{sku_123_b2} → 节点 18,   bucket 2 库存 100
+  ...
+  stock:{sku_123_b9} → 节点 27,   bucket 9 库存 100
+
+  10 个 bucket × 10w QPS = 100w QPS ✓
+```
+
+**注意**:`{sku_123_b0}` 用 hash tag 锁分片——同 bucket 的 stock 和 reserve Set 也要落同槽,这样 Lua 才能跨 KEYS 操作。
+
+#### Bucket 选择策略
+
+```go
+func selectBucket(userID, skuID int64) int {
+    // 策略 1: user_id hash → 同用户始终落同 bucket(便于幂等)
+    return int(userID % 10)
+
+    // 策略 2: 随机 → 流量均匀,但同用户多次下单可能落不同 bucket
+    // return rand.Intn(10)
+
+    // 策略 3: 加权 → 按节点负载动态分配(复杂)
+}
+```
+
+**推荐策略 1**:`user_id % N`——保证同用户同 SKU 永远落同 bucket,幂等记录不分散。
+
+#### 假售罄问题(分桶偏斜)
+
+```text
+理想情况:
+  bucket 0: 100/100 → 卖完
+  bucket 1: 100/100 → 卖完
+  ... 均匀消耗
+
+真实情况(user_id % 10):
+  bucket 0: 95/100 → 还剩 5
+  bucket 1: 100/100 → 完了
+  bucket 2: 80/100 → 还剩 20
+  ...
+  整体卖了 90%,但某些 bucket 已耗尽
+  → 用户被分配到耗尽的 bucket → 显示售罄
+  → 实际还有 100 件未卖!
+```
+
+**这就是「假售罄」的真实场景**——不是 Redis 限流,而是分桶不均。
+
+#### 跨 bucket 兜底(Go 端实现)
+
+Lua 不能跨节点操作,只能在 Go 端做顺次扫描兜底:
+
+```go
+const BucketCount = 10
+
+func ReserveStock(ctx context.Context, userID, skuID, orderID int64, qty int) error {
+    primary := int(userID % int64(BucketCount))  // 用户固定 bucket
+
+    // 主 bucket 优先,失败兜底其他 bucket
+    for i := 0; i < BucketCount; i++ {
+        bucketIdx := (primary + i) % BucketCount
+        keys := []string{
+            fmt.Sprintf("stock:{sku_%d_b%d}", skuID, bucketIdx),   // hash tag 锁同 slot
+            fmt.Sprintf("reserve:{sku_%d_b%d}", skuID, bucketIdx),
+        }
+
+        result, err := reserveScript.Run(ctx, rdb, keys, orderID, qty, 1800).Int()
+        if err != nil {
+            log.Warn("bucket failed, skip", "bucket", bucketIdx, "err", err)
+            continue
+        }
+
+        if result == 1 || result == 0 {
+            recordBucket(orderID, bucketIdx)  // 记录命中 bucket,后续释放/实扣用同一个
+            return nil
+        }
+        if result == -2 {
+            continue  // 该 bucket 售罄,尝试下一个
+        }
+        return fmt.Errorf("unexpected result: %d", result)
+    }
+
+    return ErrInsufficientStock  // 所有 bucket 都售罄
+}
+```
+
+**关键点**:`recordBucket(orderID, bucketIdx)` 必须记录命中的 bucket——后续释放/实扣**必须用同一个 bucket**,不然找不到 reserve 记录。
+
+**代价**:大促末期(库存接近 0)时,每个请求最多扣 10 次 Lua = 平均延迟从 1 ms 涨到 5-10 ms。可接受。
+
+#### 库存再平衡(异步迁移,选用)
+
+```text
+后台 worker 每秒扫描:
+  if max(bucket_remaining) > 2 * min(bucket_remaining):
+    从 max bucket 迁移 50% 给 min bucket
+    (Lua 同节点操作,跨节点用 Go 协调)
+```
+
+**代价**:实现复杂,Redis Cluster 跨节点迁移要 SCAN + 双写 + 删除。**生产环境少见**,通常用兜底逻辑替代。
+
+#### 中心库存 + bucket(双层,京东/淘宝用)
+
+```text
+Redis 中心库存(stock:sku_123) = 1000
+N 个 bucket 各持一部分配额 100
+bucket 配额耗尽 → 从中心库存「申请」补充 100
+中心库存耗尽 → 全集群停售
+```
+
+**代价**:多一次跨节点调用,但解决了热点不均。**京东、淘宝大促用这套**。
+
+### C.4 方案 B:本地缓存预扣(秒杀级)
+
+```text
+大促开始前:
+  网关层 32 实例,每个实例预分配本地缓存 31 件库存
+  total = 32 × 31 = 992
+
+扣减时:
+  网关本地原子扣减(atomic.AddInt32)
+  本地售罄 → 直接返回「已售罄」(不打 Redis)
+
+偶尔同步:
+  每 100 ms 把本地库存「已售」上报中心
+```
+
+**优势**:微秒级,无网络开销,扛 1000w QPS 毫无压力。
+
+**代价**:
+- 库存精度低(中心 + 1000,每个网关上报有延迟)
+- 网关挂了对应的库存暂时丢失
+- 不适合精确控制库存的业务(如奢侈品)
+
+**适用**:小米抢手机、12306 春运首发等「超大流量 + 容忍少量误差」场景。
+
+### C.5 方案 C:分层 Redis(L1 网关 + L2 中心)
+
+```text
+L1: 网关层 Redis(独立 Cluster,32 个节点,每节点本地)
+    用 user_id hash → 强制路由到本地 Redis
+    每个 L1 Redis 持有 总库存/32 配额
+
+L2: 中心 Redis Cluster
+    存真实库存
+    L1 配额耗尽 → 从 L2 申请新配额
+```
+
+**特点**:介于方案 A 和方案 B 之间——比 A 性能高(本地),比 B 精确(有中心)。
+
+**业界采用**:抖音、快手秒杀链路,延迟 < 1 ms,QPS 百万。
+
+### C.6 决策对比表
+
+| 维度 | 方案 A 分桶 | 方案 B 本地预扣 | 方案 C 分层 Redis |
+| --- | --- | --- | --- |
+| **QPS 上限** | bucket 数 × 10w | 几乎无限 | 网关数 × 几十万 |
+| **库存精度** | 精确 | 误差几件 | 精确 |
+| **延迟** | 1-2 ms | < 0.1 ms | 0.5-1 ms |
+| **实现复杂度** | 中 | 低 | 高 |
+| **假售罄风险** | 有(需兜底逻辑) | 高(本地售罄就拒) | 低 |
+| **运维复杂度** | 低 | 中 | 高 |
+| **业界采用** | 阿里、抖音电商主流 | 小米秒杀、12306 | 抖音/快手秒杀 |
+
+### C.7 订单系统(本文样板)的推荐
+
+```text
+日常订单(2000w/天,峰值 5w QPS):
+  → 单 Redis Cluster + 单 key 即可,不分桶
+  → 单节点 10w QPS 足够
+
+大促订单(峰值 50w QPS):
+  → 库存分桶(方案 A) + Go 端兜底跨 bucket 扫描
+  → 分 10 个 bucket,理论 100w QPS
+
+抢购 / 秒杀(峰值 1000w QPS,如 iPhone 首发):
+  → 本地缓存预扣(方案 B)+ 网关层做主战场
+  → 见 [03-seckill-system.md](03-seckill-system.md)
+```
+
+### C.8 资深追问预案
+
+| 追问 | 回答 |
+| --- | --- |
+| 为什么不用 Redis 的 Pipeline 批量扣? | Pipeline 不是原子的,会有竞态;Lua 才原子 |
+| Bucket 数怎么定? | 一般 10-100,看 QPS 需求和 Redis 节点数;太少没效果,太多管理复杂 |
+| Bucket 之间库存不均怎么办? | Go 端兜底(顺次扫描)+ 定时再平衡(可选) |
+| 用 user_id hash 会有用户长期落同 bucket 吗? | 会,但因为有跨 bucket 兜底,影响小;追求绝对均匀用随机 |
+| 大促前怎么预热? | 大促前 30 min 把库存均匀写入各 bucket,reserve Set 清空 |
+| 单 SKU 库存特别大(如 10w 件)需要分桶吗? | 不需要,QPS 才是分桶的理由,不是库存大小 |
+| 释放/实扣怎么知道用哪个 bucket? | 下单时记录 `order → bucket` 映射(MySQL 一个字段 / Redis 一个 key),后续操作查这个映射 |
+| Hash tag 不当导致所有 bucket 落同节点? | 用 `{sku_123_bN}` 而非 `{sku_123}`,bucket 编号要进 hash tag 才能分散 |
+| 大促结束后多余 bucket 怎么回收? | 后台任务扫描 bucket 剩余,把零散库存合并回中心,降低管理成本 |
+
+### C.9 与附录 A 的关系
+
+| 场景 | 附录 A 单 key | 附录 C 分桶 |
+| --- | --- | --- |
+| 日常 SKU | ✓ 默认 | 浪费 |
+| 大促爆款 | ❌ 瓶颈 | ✓ 必须 |
+| 秒杀超热点 | ❌ | ✓ + 本地预扣 |
+| 实现复杂度 | 简单 | 中(多一层映射) |
+
+**生产建议**:**默认走附录 A 单 key,只对识别出的「大促爆款 SKU」开启分桶**——通过商品中心的"是否标记为热点"开关动态切换,不要全量分桶(浪费 + 复杂)。
