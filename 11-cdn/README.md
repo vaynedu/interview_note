@@ -18,6 +18,7 @@
 | 06 | [边缘计算](06-edge-computing.md) | Workers / Lambda@Edge / Fastly Compute / V8 / WASM |
 | 07 | [典型场景](07-scenarios.md) | 点播 / 直播 / 短视频 / 大文件 / API / 图片 / 游戏 / 移动 |
 | 08 | [故障案例与运维](08-troubleshooting-cases.md) | 命中率 / 回源风暴 / CC / 容量 / 监控 / 演练 |
+| 09 | [融合 CDN(Multi-CDN)](09-multi-cdn.md) | 多家 CDN 调度 / 质量打分 / 容灾 / 回源风暴 / 大厂方案 |
 
 ## 跨章高频题
 
