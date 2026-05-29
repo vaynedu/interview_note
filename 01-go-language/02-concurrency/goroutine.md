@@ -2,7 +2,79 @@
 
 > Go 用户态协程：M:N 调度，栈从 2KB 起伸缩，创建/销毁极轻量，由 runtime 全权管理
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **goroutine 是 Go runtime 调度的轻量级用户态协程**——栈 2KB 起动态伸缩,创建/切换都在用户态,`go func()` 一行启动,**百万并发不是难事**(同等内存下 OS thread 撑不过几千)。
+
+延伸(被追问时再展开):
+
+> 它是 Go 并发模型的基石——**M:N 调度**把 N 个 goroutine 复用到 M 个 OS 线程上,**抢占 + 协作**结合调度,配合 channel 实现 CSP。"线程级开销、函数级心智",这才是 Go 高并发的根。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+> 凡是"独立任务 + 可并行 + 不强求顺序"的活儿,都该考虑开 goroutine。
+
+| 场景 | 一句话 | 典型用法 |
+| --- | --- | --- |
+| **服务器每请求一 G** | net/http 默认每个请求开一个 goroutine | `http.Handler` 内直接同步写,runtime 帮你并发 |
+| **并行处理(map-reduce 风格)** | N 个独立子任务同时跑,聚合结果 | `errgroup.Group{}.Go(...)` + `Wait()` |
+| **异步执行(fire-and-forget)** | 发邮件 / 打日志 / 上报埋点,不阻塞主流程 | `go SafeLog(...)`(必须 recover) |
+| **后台 worker / 定时任务** | 常驻 goroutine 消费 channel / ticker | `for { select { case <-ticker.C: ... case <-ctx.Done(): return } }` |
+| **扇出扇入(fan-out / fan-in)** | 1 源 → N worker → 1 收集 | worker pool + 结果 channel |
+| **超时 / 取消传播** | 用 ctx 控制一批 goroutine 同时退出 | `errgroup.WithContext` |
+
+**判断要不要开 G 的标准**:**任务能并行 + 有明确退出条件 + 数量可控**——三个都满足才开,否则用 worker pool。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **goroutine 泄漏** | `runtime.NumGoroutine()` 线性增长,内存涨 | channel 永远不关 / select 没退出分支 / 无 ctx 控制 | 每个 G 都要有明确退出条件,加 ctx + done channel |
+| **for 循环闭包变量复用**(Go 1.22 前) | N 个 G 全打印同一个值(最后一个) | for 的 `i` 是同一个变量,G 捕获的是引用 | `go func(i int){...}(i)` 或 `i := i`;Go 1.22+ 默认修复 |
+| **panic 不能跨 G recover** | 子 G panic 直接整个进程 crash | 每个 G 有独立栈,recover 只对本 G 生效 | 每个 G 入口加 `defer recover()`,封装 GoSafe |
+| **过度创建 G 没有 pool** | 调度延迟飙升 / OOM / GC 暴涨 | 无界 `for range tasks { go t() }`,百万 G 失控 | 用 worker pool / 信号量 / errgroup.SetLimit |
+| **主 G 提前退出** | 子 G 还没跑完进程就退了 | main 函数 return 等于 `os.Exit(0)`,不等其他 G | `sync.WaitGroup` 或 `errgroup.Wait()` 阻塞主 G |
+| **`wg.Add` 放在 `go` 之后** | `wg.Wait()` 偶发不等(竞态) | 主 G 已经 Wait,Add 还没执行,counter=0 立即放行 | **永远在 `go` 之前 Add** |
+| **ctx 不传递** | 取消信号传不进 G,优雅停机失败 | 子 G 不知道父级要退出 | 函数签名第一个参数固定 `ctx context.Context`,select 监听 `<-ctx.Done()` |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:goroutine 和线程的区别?**
+goroutine 是 **runtime 调度的用户态协程**,栈 2KB 起动态伸缩,创建/切换都不进内核;OS 线程栈 1~8MB 固定,切换走内核态(~1μs)。一个进程开**百万 G** 没问题,开**几千线程**就吃不消。M:N 模型把 N 个 G 复用到 M 个 OS 线程上。
+
+**Q2:G 的栈多大?怎么扩容?**
+初始 **2KB**(早期 8KB),最大 **1GB**(amd64)。编译器在函数序言插入 `stackguard0` 检查,不够就调 `morestack`:**分配 2 倍新栈 + 复制旧栈内容 + 调整栈上指针**(precise stack copy)。GC 时使用率低于 1/4 还会**收缩**。
+
+**Q3:GMP 调度模型一句话?**
+**G 是 goroutine,M 是 OS 线程,P 是逻辑处理器(默认 = GOMAXPROCS = CPU 核数)**。P 持有本地 runq,M 必须绑定 P 才能跑 G;本地 runq 空了去全局 / 别的 P 偷(work-stealing)。
+
+**Q4:百万 goroutine 真实开销?**
+内存:100 万 × 2KB = **2GB 起步**(实际更多,栈会涨)。调度:G 多了调度延迟上升,GC 扫描栈也变慢。**生产上建议用 worker pool 把并发数压到 CPU 核数的几倍到几十倍**,不要无脑 `go`。
+
+**Q5:goroutine 调度时机?抢占式还是协作式?**
+**Go 1.14 起是基于信号的异步抢占**(之前是协作式,只在函数调用、chan 操作、syscall 等检查点切换)。现在 sysmon 监控到 G 跑超过 10ms 会发 SIGURG 强制抢占,避免死循环卡住调度。
+
+**Q6:goroutine 泄漏怎么排查?**
+1. `pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)` 看 G 数量和堆栈
+2. `go tool pprof http://localhost:6060/debug/pprof/goroutine` 看火焰图
+3. 重点看 **waitReason**:`chan send`/`chan receive`/`select` 集中的就是泄漏点
+4. 治理:每个 `go func()` 入口先答三问——**什么时候退出?怎么取消?panic 怎么办?**
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 goroutine 的 g 结构、创建销毁、栈管理、状态机、八股速记、手写实现、踩坑实录等内容。**正常面试 Q1-Q6 够用**,只在被深追"g 结构里有啥 / morestack 怎么走 / GMP 偷 G 怎么偷"时才用到。
+
+---
+
+## 六、核心原理
 
 ### 1.1 g 结构
 
@@ -58,7 +130,7 @@ _Gidle → _Grunnable → _Grunning ⇄ _Gwaiting (chan/sleep/syscall/...)
 | 调度方 | Go runtime | OS 内核 |
 | 数量 | 百万级可行 | 几千就吃不消 |
 
-## 二、八股速记
+## 七、八股速记
 
 - M:N 调度，**N 个 goroutine 复用 M 个 OS thread**
 - 栈 **2KB 起，动态伸缩**，最大 1GB
@@ -69,7 +141,7 @@ _Gidle → _Grunnable → _Grunning ⇄ _Gwaiting (chan/sleep/syscall/...)
 - 主 g 退出整个程序退出，不等其他 g
 - runtime.Gosched() 主动让出，runtime.Goexit() 立即终止当前 g
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：goroutine 是协程还是线程？**
 是 Go runtime 调度的**用户态协程**（M:N 调度模型）。多个 goroutine 复用少量 OS 线程，由 Go runtime 在用户态完成调度，避免大部分内核态切换开销。
@@ -97,7 +169,7 @@ _Gidle → _Grunnable → _Grunning ⇄ _Gwaiting (chan/sleep/syscall/...)
 **Q7：goroutine 能被强制 kill 吗？**
 **不能**。Go 没有 `g.Kill()`。退出方式只能是：(1) g 自己 return；(2) 通过 ctx/chan 通知它退出，它自己配合。这是设计选择——强制 kill 会让资源清理状态不可控。
 
-## 四、手写实现
+## 九、手写实现
 
 **1. WaitGroup 风格的并发执行：**
 
@@ -199,7 +271,7 @@ func workerPool[T, R any](
 }
 ```
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：goroutine 泄漏（最常见）
 

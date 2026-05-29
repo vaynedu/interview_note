@@ -2,7 +2,116 @@
 
 > Go 标准库并发原语：Mutex / RWMutex / WaitGroup / Once / Pool / Map / Cond / atomic
 
-## 〇、多概念对比：5 大同步原语（D 模板）
+## 一、一句话总结(背诵版)
+
+> **sync 包提供基础同步原语**——**Mutex / RWMutex**(锁)、**WaitGroup**(等子 G)、**Once**(一次性)、**Cond**(条件变量)、**Pool**(对象池)、**Map**(并发 map),**覆盖大部分共享内存同步场景**;高频热点用 atomic,通信协调用 channel,共享状态保护用 sync。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+> 详细原理见后文核心提炼章节。这里只列**面试一定会被问到**的 6 个原语典型场景。
+
+| 原语 | 场景 | 最小代码 |
+| --- | --- | --- |
+| **sync.Mutex** | 保护共享变量(map / struct 字段 / 计数器)| `mu.Lock(); defer mu.Unlock(); m[k] = v` |
+| **sync.RWMutex** | 读多写少(配置 / 缓存 / 元数据)| `rw.RLock(); v := cache[k]; rw.RUnlock()` |
+| **sync.WaitGroup** | 等所有子 G 完成(扇出收集)| `wg.Add(1); go func(){ defer wg.Done(); ... }(); wg.Wait()` |
+| **sync.Once** | 单例 / 初始化只执行一次 | `once.Do(func(){ instance = &S{} })` |
+| **sync.Pool** | 复用对象减 GC(buffer / 解析器)| `b := pool.Get().(*bytes.Buffer); defer pool.Put(b)` |
+| **sync.Cond** | 等待条件成立(生产消费 / 屏障)| `c.L.Lock(); for !ready { c.Wait() }; c.L.Unlock()` |
+
+**选谁的判断**:**计数 → atomic;通用保护 → Mutex;读多写少 → RWMutex / sync.Map;通信协调 → channel**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **Mutex 被复制**(值传递结构体) | 锁失效,数据竞争 | 值接收者拷贝结构体连同 mu 字段,两份锁独立 | 改 `*S` 指针接收者;`go vet` 报警 |
+| **RWMutex 锁升级死锁** | `RLock` 后再 `Lock` 永久阻塞 | RWMutex 不支持升级,已有读锁时申请写锁会等自己释放 | 先 RUnlock 再 Lock,或全程用 Lock |
+| **WaitGroup 在 go 之后 Add** | `Wait()` 提前返回 / panic | 主 G 可能在子 G 执行 Add 前就 Wait,counter 已为 0 | `Add` 必须在 `go` **之前**,主 G 内调用 |
+| **Once.Do 中 panic** | 后续 Do 不会重试 | done 在 panic 前已被 defer 置位(新版本) | f 自己 recover 处理 panic,不依赖外层重试 |
+| **Pool 取出对象未重置** | 携带上次数据,数据污染 | Pool 不会自动重置对象状态 | `Put` 前 `Reset()`,或 `Get` 后立即清空 |
+| **sync.Map 用错场景** | 写多时比 map+Mutex 慢 2-3x | sync.Map 仅适合 read-heavy + key 稳定,写多走 dirty 加锁路径 | 写多场景退回 `map + sync.RWMutex` |
+| **Cond.Wait 用 if 不用 for** | 虚假唤醒后条件未满足继续执行 | Signal/Broadcast 可能唤醒多个等待者,被唤醒后条件可能已变 | 永远用 `for !cond { c.Wait() }` 循环检查 |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:Mutex vs RWMutex 何时选?**
+读临界区**复杂且读多写少**(读 > 写 10x)用 RWMutex;读临界区**极短**(读一个 int)用 Mutex 或 atomic——RWMutex 自身原子操作开销可能超过保护的工作。写多场景 RWMutex 比 Mutex 还慢(写优先 + 唤醒读)。
+
+**Q2:sync.Map vs map+RWMutex 性能对比?**
+- **读密集 + key 稳定**:sync.Map 快 **5-10x**(read 字段是 atomic.Pointer,Load 完全无锁)
+- **写密集 / key 频繁变化**:sync.Map 慢 **2-3x**(走 dirty map 加锁路径 + 类型断言开销)
+- **使用边界**:sync.Map 不是通用 map 替代,只适合官方明确的两种场景(写一次读多次 / key 不相交)
+
+**Q3:sync.Once 源码原理(双重检查)?**
+
+```go
+func (o *Once) Do(f func()) {
+    if o.done.Load() == 0 { o.doSlow(f) }   // 快路径:atomic 读
+}
+func (o *Once) doSlow(f func()) {
+    o.m.Lock(); defer o.m.Unlock()
+    if o.done.Load() == 0 {                 // 慢路径:加锁后再检查
+        defer o.done.Store(1)
+        f()
+    }
+}
+```
+
+**双重检查锁**经典实现:快路径无锁 atomic 读(命中直接返回),只有第一次未完成才加锁;defer Store 保证 f 执行完才置位。
+
+**Q4:atomic 和 sync 区别?**
+- **atomic**:CPU 指令级(LOCK 前缀),**5ns 级**,**仅基础类型**(int32/64/uintptr/Pointer),适合计数器 / 标志位 / 指针交换
+- **sync**:Go 语言层原语,**25ns 起**,**任意类型**(保护临界区),适合复合操作 / 多变量保护
+- **关键事实**:atomic 不能保证"读+判断+写"复合操作的整体原子性,需用 CAS 循环
+
+**Q5:sync.Pool 内部机制(per-P pool + victim cache)?**
+
+```
+数据结构:
+  每个 P 一个 poolLocal:
+    private: 本地私有(无锁,最快)
+    shared:  双端队列(可被其他 P 偷)
+  victim:    上次 GC 留下的备份
+
+Get 顺序: private → shared → 偷其他 P → victim → New()
+Put:      private(满了放 shared 队首)
+
+GC 时: local → victim,原 victim 丢弃
+→ 对象最多存活 2 个 GC 周期
+```
+
+**victim cache 价值**:平滑过渡,避免每次 GC 命中率骤降。
+
+**Q6:WaitGroup 实现(高 32 counter + 低 32 waiter)?**
+
+```go
+type WaitGroup struct {
+    state atomic.Uint64  // 高 32 位 counter, 低 32 位 waiter count
+    sema  uint32
+}
+```
+
+- `Add(n)`:counter += n(atomic)
+- `Done()`:counter -= 1,归零时 `runtime_Semrelease` 唤醒所有 waiter
+- `Wait()`:counter > 0 时 waiter++,`runtime_Semacquire` 挂起
+- **规则**:`Add` 必须在 `Wait` **之前**调用,且不能在 g 内 Add(主 G 可能已 Wait);counter 进负数 panic
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 sync 包各原语的多概念对比、底层数据结构、调度交互、踩坑案例等源码级内容。**正常面试用不到**,只在被深追"Mutex 饥饿模式怎么切换 / sync.Map 怎么提升 dirty / Pool 的 victim 何时清"时才会用到。
+
+---
+
+## 六、多概念对比：5 大同步原语（D 模板）
 
 ### 一句话定位
 
@@ -260,7 +369,7 @@ flowchart TD
 
 ---
 
-## 〇、核心提炼（5 段式）
+## 七、核心提炼（5 段式）
 
 ### 核心机制（4 条必背）
 
@@ -477,7 +586,7 @@ GC 时:
 
 ---
 
-## 一、核心原理
+## 八、核心原理
 
 ### 1.1 sync.Mutex
 
@@ -625,7 +734,7 @@ func (c *Cond) Broadcast() // 唤醒所有
 
 Go 1.19 引入类型化原子（`atomic.Int64`/`atomic.Pointer[T]`），强制对齐 + 不可值拷贝，比裸函数安全。
 
-## 二、八股速记
+## 九、八股速记
 
 - **Mutex** 不可重入、禁止值拷贝、有正常/饥饿两模式
 - **RWMutex** 写者优先，读多写少时比 Mutex 快
@@ -636,7 +745,7 @@ Go 1.19 引入类型化原子（`atomic.Int64`/`atomic.Pointer[T]`），强制�
 - **atomic.Int64** 等类型化原子（Go 1.19+）比裸函数安全
 - 一切 sync 类型**禁止值拷贝**，go vet 会报警
 
-## 三、面试真题
+## 十、面试真题
 
 **Q1：Mutex 是公平锁吗？**
 **默认非公平**（正常模式）：新来的 g 可以"插队"抢锁，吞吐高但队尾可能饿死。当某个 g 等待 > 1ms，进入**饥饿模式**变成 FIFO 公平，等队尾追上来再退出饥饿。设计平衡了吞吐和延迟尾部。
@@ -717,7 +826,7 @@ func GetInstance() *Singleton {
 
 或更直接：包级 init 函数。
 
-## 四、手写实现
+## 十一、手写实现
 
 **1. 基于 atomic 的并发计数器：**
 
@@ -790,7 +899,7 @@ func putBuf(b *bytes.Buffer) {
 }
 ```
 
-## 五、踩坑与最佳实践
+## 十二、踩坑与最佳实践
 
 ### 坑 1：Mutex 值拷贝
 

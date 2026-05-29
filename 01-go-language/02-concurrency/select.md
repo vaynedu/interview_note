@@ -2,7 +2,78 @@
 
 > 多路复用：编译器随机化、default、空 select、nil channel、典型并发模式
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **select 是 channel 的多路复用语句**——等多个 case 中任一就绪就执行;**有 default 则非阻塞立即走 default**;**多个 case 同时就绪时伪随机选一个**(fastrand 打乱 pollOrder,避免饥饿)。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+> 详细模式见本文 [§ 五、手写实现 / 典型模式](#五手写实现--典型模式)。这里只列**面试一定会被问到**的 6 个。
+
+| 场景 | 一句话 | 最小代码 |
+| --- | --- | --- |
+| **超时控制** | select + `time.After` 限定等待时长 | `case <-time.After(3*time.Second):` |
+| **取消信号 / 优雅退出** | 监听 `ctx.Done()` 退出 goroutine | `case <-ctx.Done(): return` |
+| **非阻塞 send/recv** | 加 `default` 实现"探一探,没就跳过" | `default: // 缓冲满,丢弃` |
+| **多源汇聚 fan-in** | 多个 channel 合并到一个 select | `case v := <-a: ... case v := <-b: ...` |
+| **心跳 / 定时** | `time.Ticker` 驱动周期任务 | `case <-ticker.C: heartbeat()` |
+| **for-select-done 退出** | 并发循环标准范式 | `for { select { case <-done: return; case v := <-in: ... } }` |
+
+**判断要不要用 select**:**只有一个 channel 直接 `<-ch`;两个及以上、或要超时 / 非阻塞才上 select**。
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **`time.After` 在 for 循环里** | timer 不释放,内存 / GC 压力大 | After 内部 `NewTimer`,未触发前不能被 GC(Go 1.23 前) | 复用 `time.NewTimer` + Reset/Stop,或 `context.WithTimeout` |
+| **依赖 case 书写顺序** | 偶发饥饿 / 优先级失效 | runtime 用 fastrand 打乱 pollOrder,**伪随机选** | 优先级需求用**嵌套 select**(先单独 select 高优 + default) |
+| **没 default 以为会自动跳过** | goroutine 永久阻塞 | 无 default + 所有 case 都没就绪 → 当前 G gopark 挂起 | 想非阻塞必须显式加 `default` |
+| **所有 case 都是 nil channel** | 永久阻塞(等价 `select {}`) | nil channel 永不就绪,没 default 就只能挂着 | 至少留一个有效 case 或 default |
+| **case 内 `break` 想跳出 for** | 只跳出 select,for 继续循环 | break 默认作用域是最内层 select | 用 `break LABEL` 或 `return`,或改用 `continue/return` 控制 |
+| **`select {}` 空 select** | 永久阻塞(并非语法错误) | 没任何 case → goroutine 永远 gopark | 故意用于 **main 守护**;否则是 bug |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:select 多个 case 同时就绪选谁?**
+**伪随机**。runtime 用 `fastrand` 把 pollOrder 打乱,避免程序员依赖固定顺序,也是公平性保证。要优先级只能**嵌套 select**(高优 + default,default 里再 select 全部)。
+
+**Q2:default 什么时候执行?**
+**所有 case 都没就绪时立即执行 default**(非阻塞模式)。常用于:非阻塞 send/recv 探测、丢弃式日志、metrics 上报。**有 default 就不会阻塞**。
+
+**Q3:select 的实现原理?**
+编译期生成 `scase` 数组传给 `runtime.selectgo`。流程:**①** 生成 pollOrder(fastrand 打乱)+ lockOrder(按 channel 地址排序) **②** 按 lockOrder 加锁 **③** 按 pollOrder 扫一轮找就绪 case **④** 找到就执行;没找到 + 有 default 走 default;否则把当前 G 包成 sudog 入所有 channel 等待队列、gopark **⑤** 被唤醒后摘除其他队列、执行命中 case。
+
+**Q4:for-select 怎么优雅退出?**
+标准范式 `for-select-ctx.Done()`:
+```go
+for {
+    select {
+    case <-ctx.Done(): return
+    case v := <-in:    handle(v)
+    }
+}
+```
+要点:done 放前面(可读性,不影响概率);用 `chan struct{}` 表达信号语义;首选 `ctx.Done()` 替代手写 done。
+
+**Q5:`select {}` 空 select 有什么用?**
+**永久阻塞当前 goroutine**。主要用于 **main 守护**:启动若干后台 goroutine 后,main 不能直接 return(会终止进程),用 `select {}` 让 main 永远挂住,等待后台服务运行。
+
+**Q6:nil channel + select 有什么妙用?**
+nil channel 永远不就绪、永不被选中。可用来**动态禁用某个 case**——经典场景:fan-in 合并 channel 时,**某个 channel 关闭后把它置 nil**,这个 case 就被屏蔽,避免 `case <-closedCh` 反复立即就绪导致 busy loop。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 select 的核心原理、selectgo 源码、典型模式、踩坑实践等深度内容。**正常面试用不到**,只在被深追"selectgo 怎么实现 / pollOrder 怎么打乱 / 为什么要按地址排序加锁"时才会用到。
+
+## 六、核心原理
 
 ### 1.1 select 是什么
 
@@ -82,7 +153,7 @@ func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 | `ch <- v` | 发送 |
 | `default` | 都不就绪时执行 |
 
-## 二、八股速记
+## 七、八股速记
 
 - **多路复用**：从多个 channel 选一个就绪操作执行
 - **多就绪伪随机选**（pollOrder 用 fastrand 打乱）
@@ -94,7 +165,7 @@ func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 - **每次执行 select 都重新求值 case 表达式**
 - **加锁顺序按 channel 地址排序**，避免不同 select 之间死锁
 
-## 三、面试真题
+## 八、面试真题
 
 **Q1：select 多个 case 同时就绪选哪个？**
 
@@ -279,7 +350,7 @@ func worker(in <-chan Job, done <-chan struct{}) {
 - `done` 优先放前面（不影响选中概率，但可读性好）
 - 通常配合 `context.Context` 用 `<-ctx.Done()` 替代
 
-## 四、手写实现 / 典型模式
+## 九、手写实现 / 典型模式
 
 ### 4.1 fan-in 合并多个 channel
 
@@ -379,7 +450,7 @@ func rateLimit(reqs <-chan Req) {
 }
 ```
 
-## 五、踩坑与最佳实践
+## 十、踩坑与最佳实践
 
 ### 坑 1：`time.After` 在 for-select 里内存泄漏
 
@@ -507,7 +578,7 @@ case <-time.After(time.Second):
 □ 性能极致场景拆多个 select 减少加锁开销
 ```
 
-## 六、面试加分点
+## 十一、面试加分点
 
 - **多就绪伪随机** 防止饥饿（fastrand 打乱 pollOrder）
 - **空 select `select {}` 永久阻塞**，main 守护标配

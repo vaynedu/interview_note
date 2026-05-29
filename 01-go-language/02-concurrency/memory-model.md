@@ -2,7 +2,78 @@
 
 > happens-before / 数据竞争 / 原子操作 / atomic / race detector / Go 1.19 对齐 C++ / sync 的同步保证
 
-## 一、核心原理
+## 一、一句话总结(背诵版)
+
+> **Go 内存模型规定 happens-before 关系**——即什么操作在多 goroutine 下保证可见;**同步靠 channel / Mutex / atomic / WaitGroup / Once / go 语句建立 HB**,**普通读写无任何可见性与顺序保证**(数据竞争 = 未定义行为)。
+
+延伸(被追问时再展开):
+
+> 内存模型的存在是因为 **编译器重排 + CPU 乱序 + 缓存延迟** 让"源码顺序 ≠ 实际执行顺序"。Go 内存模型不规定具体硬件行为,而是用 **happens-before 偏序关系** 抽象掉硬件细节:**只要你用对了同步原语,Go 保证你看到正确的数据**;反之即使在 x86 这种强内存序平台上也属于未定义行为。
+
+---
+
+## 二、使用场景(场景化记忆)
+
+> 内存模型属于**底层规范**,日常写业务通常用 channel/Mutex 就自动满足。下面列**何时需要主动关心 memory model**。
+
+| 场景 | 一句话 | 关键原语 |
+| --- | --- | --- |
+| **sync.Once 初始化** | 单例 / 全局配置 / 连接池,保证初始化对所有 G 可见 | `sync.Once.Do` |
+| **atomic 标志位 + 数据更新顺序** | 先写数据再 atomic 发布标志,读者按相反顺序读 | `atomic.Store` / `Load` |
+| **close(ch) 作为发布操作** | 一次性广播事件 + 隐式发布前面所有写 | `close(done)` |
+| **goroutine 间共享变量初始化保证** | 主 G 写好再 `go f()`,新 G 一定能看到 | `go` 语句 |
+| **双重检查锁(DCL)** | Go 里**不要手写**,直接用 sync.Once;真要写必须 atomic.Pointer | `atomic.Pointer[T]` |
+| **无锁数据结构 / 热更新配置** | SPSC 队列、配置原子替换、引用计数 | `atomic.Pointer` / `atomic.Value` |
+
+**选哪个的判断**:
+- **共享一个变量** → atomic
+- **保护一段临界区** → Mutex
+- **传递数据 + 同步** → channel
+- **只初始化一次** → sync.Once
+
+---
+
+## 三、常见错误(高频踩坑)
+
+| 错误 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **无同步直接共享变量读写** | race detector 报警 / 偶发数据错乱 | 没有 happens-before → 未定义行为 | atomic / Mutex / channel 任选其一 |
+| **单写多读也不加同步** | 读端永远卡在 `for !done {}` | 编译器把 `done` 提到寄存器,永远读不到新值 | `atomic.Bool` 或 channel |
+| **手写双重检查锁不用 atomic** | Go 1.19 前内存序不明 / 读到半初始化对象 | 普通指针赋值无 hb,读端可能看到未初始化字段 | 直接 `sync.Once`,或 `atomic.Pointer[T]` |
+| **接口 / slice / string / map 普通赋值当作原子** | 读到撕裂的接口(type 指针和 data 指针不一致) | 这些类型不是单机器字,赋值非原子 | `atomic.Value` 或 `atomic.Pointer[T]` |
+| **依赖 print / log 副作用做同步** | 加了 log 程序就对、去掉就崩 | log 内部带锁恰好建立了 hb,但**不是规范保证** | 显式用 sync / atomic,别靠副作用 |
+| **认为 Go atomic 是 Relaxed 序需手动 fence** | 过度设计 / 错误推理 | Go 1.19+ atomic 默认就是 **SeqCst 顺序一致性** | 直接用,无需 fence |
+| **goroutine 结束后读其写入** | 写不可见 | goroutine 结束**不**建立 hb | wg.Wait / channel 接收 / context |
+
+---
+
+## 四、面试常问(简答模板)
+
+**Q1:Go 内存模型一句话?**
+规定**多 goroutine 下哪些操作的写对其他 G 可见**,用 **happens-before 偏序关系**描述。建立 HB 必须用同步原语(channel / Mutex / atomic / WaitGroup / Once / go 语句),否则就是数据竞争 = 未定义行为。
+
+**Q2:happens-before 关系怎么建立?**
+六类同步原语:① channel send hb 对应 recv 完成(关闭 hb 收零值);② Mutex Unlock hb 下次 Lock;③ atomic Store hb 后续 Load(Go 1.19+);④ WaitGroup Done hb Wait 返回;⑤ Once.Do 内函数完成 hb 所有 Do 返回;⑥ `go f()` hb f 开始执行(反向不成立)。
+
+**Q3:Go 里 atomic 是 SeqCst 吗?**
+**是**。Go 1.19 起明确写进 spec:atomic 操作等价于 sequentially consistent,所有 goroutine 看到 atomic 操作顺序一致,atomic 前后的普通读写不会被重排跨过 atomic。**Go 没有 Acquire/Release/Relaxed 这种分级**,只有一档 SeqCst,简单但相对慢。
+
+**Q4:为什么单写者多读者也要同步?**
+两点原因:① **编译器优化**:读循环 `for !done {}` 编译器可能把 `done` 提到寄存器,永远读不到内存里的新值;② **CPU 缓存可见性**:写者的写卡在 store buffer,读者的 cache 没刷新。**只要没有 hb,Go spec 不保证可见性**。修复:`atomic.Bool` 或 channel。
+
+**Q5:go race detector 原理?**
+**编译时插桩 + 运行时 happens-before 检测**:① 编译时给每个内存访问插桩,记录"谁、何时、读还是写";② 运行时为每块内存维护 **shadow memory(影子内存)**,记录最近的 read/write 事件;③ 用 **vector clock** 跟踪每个 goroutine 的 hb 关系,发现"两次访问没有 hb 关系且至少一个是写" → 报告 race。代价:内存 5-10×,CPU 2-20×。**CI 必开,生产别开**。
+
+**Q6:Go 1.19 内存模型有什么更新?**
+两条关键变化:① **atomic 语义明确**:1.19 前靠"看起来对",1.19 起明确等价于 SeqCst,与 sync 同等 hb;② **对齐 C++ 内存模型**:race 行为定义更严格(无 hb 的读取从此**只能返回**:本次写、之前的写、或零值,不能返回"飞来横财"的随机值);③ **新 atomic 类型**:`atomic.Int64/Bool/Pointer[T]`,自带对齐 + 类型安全,推荐替代旧 API。
+
+---
+
+## 五、深水区:原理与源码(被追问时看)
+
+> 下面是 Go 内存模型的具体规则、跨 goroutine 同步原语的 HB 保证、race detector 实现、Go 1.19 变化等深度内容。**正常面试用不到**,只在被深追"happens-before 怎么严格定义 / race detector 怎么实现"时才会用到。
+
+## 六、核心原理
 
 ### 1.1 为什么需要内存模型
 
@@ -70,7 +141,7 @@ flowchart TB
     style Sync fill:#9f9
 ```
 
-## 二、具体同步保证（Go 官方内存模型）
+## 七、具体同步保证（Go 官方内存模型）
 
 ### 2.1 channel
 
@@ -232,7 +303,7 @@ print(data)             // 4 保证打印 "hello"
 
 **Go 1.19 之前**：atomic 的同步语义不明确，大家靠"看起来可以"；1.19+ 明确等价于 sync 操作的同步。
 
-## 三、八股速记
+## 八、八股速记
 
 - **内存模型 = 跨 goroutine 读写的可见性 + 顺序规则**
 - **happens-before** 是核心抽象：A hb B → A 的结果对 B 可见
@@ -247,7 +318,7 @@ print(data)             // 4 保证打印 "hello"
 - **没有 hb 关系 = 数据竞争 = 未定义行为**
 - **用 race detector** `go test -race` 发现数据竞争
 
-## 四、面试真题
+## 九、面试真题
 
 **Q1：什么是 happens-before？**
 
@@ -407,7 +478,7 @@ Java/C 的 volatile 保证可见性 + 禁止重排。在 Go 里对应：
 
 所以 Go 里**不存在"加个 volatile 就行"的快捷方式**，必须用 sync 或 atomic。
 
-## 五、手写实现
+## 十、手写实现
 
 ### 5.1 用 atomic 实现单生产单消费无锁队列（进阶）
 
@@ -474,7 +545,7 @@ func GetConfig() *Config {
 
 `atomic.Pointer[T]` 是 Go 1.19+ 泛型原子指针，典型无锁热更新配置。
 
-## 六、踩坑与最佳实践
+## 十一、踩坑与最佳实践
 
 ### 坑 1：用 bool 做"完成"标志不带同步
 
@@ -586,7 +657,7 @@ x := h  // 可能读到半更新的接口（type 指针和 data 指针不一致�
 □ goroutine 结束不等于写可见，必须配合 wg/ctx/channel 同步
 ```
 
-## 七、面试加分点
+## 十二、面试加分点
 
 - **happens-before 是可见性 + 顺序的统一抽象**（偏序关系）
 - Go 内存模型明确了**哪些同步原语建立 hb**（channel/sync/atomic/go 语句）

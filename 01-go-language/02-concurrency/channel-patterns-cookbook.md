@@ -4,6 +4,17 @@
 >
 > 配合 [channel.md](channel.md)（原理）+ [select.md](select.md)（多路复用）+ [context.md](context.md)（取消传播）
 
+## 〇、一句话定位
+
+> 本文是 **Channel 模式速查手册**，不是原理深水区——原理看 [channel.md](channel.md)，这里只回答"**遇到 X 场景该用哪个模式 + 代码长啥样**"。
+
+- **15 个通用模式**（Pipeline / Fan-out / Worker Pool / Semaphore / Rate Limiter / Heartbeat / Broadcast / Pub-Sub / Future / Timeout / Cancellation / Graceful Shutdown / Singleflight / Priority / Bounded Parallelism）
+- **5 个业务场景**（连接池 / 爬虫 / 异步任务队列 / 日志聚合 / 批量 flush）
+- 末尾 [速查选型表](#速查选型表) 按场景反查模式；[性能 Tips](#性能-tips) 收录 buffer / 关闭协议 / nil chan 妙用等通用经验
+- **使用方式**：面试遇到"用 channel 实现 X"或"高并发处理 Y 怎么做"——先来这里找最接近的模式，再按业务调
+
+---
+
 ## 目录
 
 ### 设计模式
