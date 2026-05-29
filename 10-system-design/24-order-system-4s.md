@@ -439,88 +439,202 @@ func ShardOfOrder(orderID int64) (db, table int) {
 
 订单系统需要对接**多个外部系统**,每个系统都有自己的"订单号":
 
-| 外部系统 | 它的"订单号" | 用途 |
-| --- | --- | --- |
-| **支付宝/微信支付** | 支付订单号(`out_trade_no` 对应平台 `trade_no`) | 支付状态查询、退款 |
-| **顺丰/京东物流** | 运单号 | 物流轨迹追踪 |
-| **天猫/淘宝(跨平台)** | 平台原单号 | 渠道分账、对账 |
-| **菜鸟/电子面单** | 电子面单号 | 打印面单 |
-| **客服工单** | 工单号 | 售后联动 |
+| 外部系统 | 它的"订单号" | 关系 | 频率 |
+| --- | --- | --- | --- |
+| **支付宝/微信支付** | 支付订单号(`out_trade_no` ↔ 三方 `trade_no`) | 通常 1:1 | 极高(主路径必经) |
+| **顺丰/京东物流** | 运单号 | 1:N(拆单/重发) | 高 |
+| **退款流水** | 退款单号 | 1:N(部分退/多次退) | 中 |
+| **天猫/淘宝(跨平台)** | 平台原单号 | 1:1 | 中 |
+| **菜鸟/电子面单** | 面单号 | 1:1 | 中 |
+| **客服工单** | 工单号 | 1:N | 低 |
 
-**核心问题**:一个内部 order_id 可能映射到 N 个外部 ID,**怎么存、怎么查、怎么对账?**
+**核心三问**:**怎么存(主表 vs 独立表)?怎么分片?怎么反查(三方回调没有 order_id)?**
 
-#### 4.3.2 映射表设计
+#### 4.3.2 设计权衡:主表冗余 vs 独立映射表 ⭐
+
+最容易犯的错——**把所有三方 ID 都塞进一张映射表**。实战正确做法是**按"关系基数"拆分**:
+
+| 三方 ID 类型 | 关系 | 推荐方案 | 原因 |
+| --- | --- | --- | --- |
+| **支付单号**(最高频) | 1:1 | **冗余订单主表** | 主流量场景,每次查订单必带,**避免 JOIN** |
+| **物流运单号** | 1:N | 独立映射表 | 拆单/重发产生多行 |
+| **退款流水号** | 1:N | 独立映射表 | 部分退/多次退产生多行 |
+| **平台关联号** | 1:1 | 主表冗余(可选) | 看是否高频查询 |
+| **客服工单** | 1:N | 独立映射表 | 售后多工单 |
+
+**资深点**:
+> "把支付单号塞进映射表是常见反模式——支付是主路径,每个订单都有,**每查一次订单都要 JOIN 一次映射表**,白白增加 IO 和事务复杂度。**一对一关系冗余主表,只把一对多关系放映射表**。"
+
+#### 4.3.3 表结构(主表冗余 + 独立映射)
+
+**订单主表冗余支付字段**(1:1):
+
+```sql
+ALTER TABLE orders ADD COLUMN (
+    pay_channel           VARCHAR(32)  DEFAULT NULL,    -- 'alipay'/'wxpay'
+    pay_out_trade_no      VARCHAR(64)  DEFAULT NULL,    -- 我们传给三方的(= order_id 衍生)⭐
+    pay_channel_trade_no  VARCHAR(64)  DEFAULT NULL,    -- 三方回传的内部单号
+    pay_amount            DECIMAL(12,2) DEFAULT NULL,
+    paid_at               DATETIME     DEFAULT NULL
+);
+-- 索引
+ALTER TABLE orders ADD UNIQUE KEY uk_pay_out (pay_out_trade_no);
+ALTER TABLE orders ADD UNIQUE KEY uk_pay_channel_trade (pay_channel, pay_channel_trade_no);
+```
+
+**独立映射表(只放 1:N 关系)**:
 
 ```sql
 CREATE TABLE order_external_ref (
     id              BIGINT      NOT NULL AUTO_INCREMENT,
-    order_id        BIGINT      NOT NULL,            -- 内部订单 ID
-    channel_type    VARCHAR(32) NOT NULL,            -- 'alipay'/'wxpay'/'sf_express'/'taobao'...
-    channel_order_no VARCHAR(64) NOT NULL,           -- 三方订单号
-    channel_status  VARCHAR(32) DEFAULT NULL,        -- 三方侧状态(可选,审计用)
-    extra           JSON        DEFAULT NULL,        -- 扩展字段(渠道独有信息)
+    order_id        BIGINT      NOT NULL,
+    user_id         BIGINT      NOT NULL,            -- 冗余分片键 ⭐
+    ref_type        VARCHAR(16) NOT NULL,            -- 'refund'/'logistics'/'platform'/'workorder'
+    channel_type    VARCHAR(32) NOT NULL,            -- 'alipay'/'sf_express'/'taobao'
+    channel_no      VARCHAR(64) NOT NULL,            -- 三方单号
+    channel_status  VARCHAR(32) DEFAULT NULL,        -- 三方侧状态
+    extra           JSON        DEFAULT NULL,        -- 渠道独有字段
     created_at      DATETIME    NOT NULL,
     updated_at      DATETIME    NOT NULL,
 
     PRIMARY KEY (id),
-    UNIQUE KEY uk_channel_no (channel_type, channel_order_no),  -- 防重复回调
-    KEY idx_order_channel (order_id, channel_type)
+    UNIQUE KEY uk_channel_no (channel_type, channel_no),  -- 防重复回调
+    KEY idx_order (order_id, ref_type)
 ) ENGINE=InnoDB;
--- 分片键:order_id(按基因法 → 与主订单同库,本地事务)
 ```
 
-**关键设计要点**:
+#### 4.3.4 分片策略 ⭐
 
-| 设计点 | 说明 |
-| --- | --- |
-| **UNIQUE(channel_type, channel_order_no)** | 防同渠道重复回调创建多条记录,**幂等的物理保障** |
-| **分片键 = order_id** | 与订单主表同库,**避免分布式事务**(写订单+写映射在同一事务) |
-| **一对多关系** | 一个 order_id 可有多条 channel_type 不同的记录(支付 + 物流 + 平台) |
-| **保留 channel_status** | 三方侧的状态(可选),**对账时直接比对** |
-| **extra JSON** | 渠道独有字段(如支付宝的退款序号、顺丰的回单图片 URL) |
+**必须分片,且与订单主表同分片键**:
 
-#### 4.3.3 幂等处理(三方回调防重复)
+| 表 | 分片键 | 原因 |
+| --- | --- | --- |
+| `orders` | `user_id` | C 端主流量(见 §4.1) |
+| `order_external_ref` | `user_id`(**冗余字段**) | 与主表同库 → **本地事务** |
+
+**为什么必须冗余 `user_id` 到映射表**:
+
+```text
+错误设计:order_external_ref 只有 order_id,不冗余 user_id
+  问题链:
+    写订单(分片键 user_id)+ 写映射(分片键 order_id)
+    → ORM/分库中间件按各自分片键路由
+    → 两个不同的物理库连接
+    → 触发分布式事务(XA / TCC / 本地消息表),慢且复杂
+
+正确设计:冗余 user_id 到映射表
+  写入路径:
+    user_id → 路由到分片 N
+    在分片 N 内:INSERT orders + INSERT order_external_ref
+    → 同库本地事务,毫秒完成
+```
+
+**资深点**:
+> "**分片键冗余**是分库分表的核心套路——任何子表都要冗余主表的分片键字段,**保证子表和主表永远同库**,避免分布式事务。订单系统的 order_items / order_audit / order_external_ref **全部都要冗余 user_id**。"
+
+#### 4.3.5 三方回调反查难题:out_trade_no 自带基因 ⭐
+
+**问题**:支付宝回调只带 `out_trade_no` 和 `trade_no`,**没有 user_id**——怎么从 1024 张表里定位到具体那一张?
+
+**三种方案对比**:
+
+| 方案 | 实现 | 性能 | 评价 |
+| --- | --- | --- | --- |
+| **A. 全库扫描** | 1024 张表逐个 `SELECT WHERE channel_no=?` | 单次回调几百次 SQL | ❌ 不可行 |
+| **B. 全局路由表** | 单独维护 `channel_no → order_id` 路由表 | 多一次查询 + 路由表自己要分片要扩容 | ⚠️ 备选 |
+| **C. out_trade_no 自带基因** ⭐ | `out_trade_no = order_id`(或衍生) | 直接基因解码,O(1) | ✅ **主流** |
+
+**方案 C 的核心思想**:
+
+```text
+下单时(我们的服务):
+  生成 order_id = 17283746529384757   ← 含 user_id 基因位(见 §4.2)
+  
+  调支付宝预下单接口:
+    POST alipay.trade.precreate
+    Body: { 
+      out_trade_no: "17283746529384757",   ← 直接用我们的 order_id
+      total_amount: 100,
+      ...
+    }
+
+支付宝回调(异步通知):
+  POST https://our-server/api/pay/callback
+  Body: { 
+    out_trade_no: "17283746529384757",     ← 我们传过去的 = order_id
+    trade_no:     "2026052900000000001234",← 支付宝内部号(只存不查)
+    status:       "TRADE_SUCCESS",
+    ...
+  }
+
+我们的处理:
+  1. 取 out_trade_no → 解析为 int64 order_id
+  2. order_id 解基因 → ShardOfOrder() 算出 (db, table)
+  3. SELECT FROM orders_dbN_tM WHERE order_id = ?
+  4. 状态机推进 + 写 pay_channel_trade_no 入主表
+  
+全程零路由表,O(1) 定位分片。
+```
+
+**out_trade_no 的几种变体**(基因必须保留):
+
+| 形式 | 例子 | 适用 |
+| --- | --- | --- |
+| **直接用 order_id** | `17283746529384757` | 内部不介意暴露 ID 数值 |
+| **加业务前缀** | `ORD17283746529384757` | 多业务共用渠道时区分(主站/海外/B 端) |
+| **Base36 编码** | `4LMQRX6KP91A` | 短一些,但要可逆解码 |
+| **加签名后缀** | `ORD17283746529384757_a3f9` | 防伪造回调(配合验签) |
+
+**关键约束**:**无论怎么变换,基因位必须保留 + 必须可逆解出 order_id**——回调时纯算法(不查 DB)从 `out_trade_no` 算出分片定位。
+
+**支付宝的 `trade_no` 我们怎么用**:
+- **实时链路**:**只存,不查**(写入 `pay_channel_trade_no` 字段)
+- **对账链路**:T+1 拉账单时按 `trade_no` 逐单匹配
+- **退款链路**:发起退款时把 `trade_no` 传给支付宝
+
+> "**out_trade_no 是我们设计的,trade_no 是三方设计的**——前者承担实时反查所以必须带基因,后者只承担对账匹配所以不需要任何特殊设计。**职责分离**就是设计的根本。"
+
+#### 4.3.6 幂等处理(三方回调防重复)
 
 **典型场景**:支付宝回调可能重发 N 次(网络抖动、平台重试)。
 
 ```go
-func OnPaymentCallback(channelType, channelOrderNo, orderID string) error {
-    // 1. 用渠道单号查映射,看是否已处理
-    ref, err := db.QueryByChannel(channelType, channelOrderNo)
-    if err == nil && ref.OrderID == orderID && ref.ChannelStatus == "SUCCESS" {
-        // 已处理过,直接返回成功(幂等)
-        return nil
+func OnPaymentCallback(outTradeNo, channelTradeNo string, amount decimal.Decimal) error {
+    // 1. out_trade_no 自带基因 → 解出 order_id 和分片
+    orderID, err := parseOutTradeNo(outTradeNo)  // 去前缀/解码
+    if err != nil {
+        return ErrInvalidOutTradeNo
     }
+    db, table := ShardOfOrder(orderID)            // 基因解码
 
-    // 2. 启动事务:推订单状态机 + 写/更新映射表
-    tx := db.Begin()
-    defer tx.Rollback()
+    // 2. CAS 推状态机(同一事务写支付字段)
+    sql := fmt.Sprintf(`
+        UPDATE orders_%d
+        SET state='PAID',
+            pay_channel_trade_no=?,
+            paid_at=NOW()
+        WHERE order_id=? AND state='PENDING'`, table)
 
-    // 2.1 CAS 推状态机(待支付 → 已支付)
-    n, _ := tx.Exec(`UPDATE orders SET state='PAID' 
-                     WHERE order_id=? AND state='PENDING'`, orderID)
+    n, _ := dbConn(db).Exec(sql, channelTradeNo, orderID)
+
     if n == 0 {
-        // 已是 PAID(重复回调)或非法状态
-        if ref != nil && ref.ChannelStatus == "SUCCESS" {
-            return nil  // 幂等命中
+        // affected_rows=0 → 状态不是 PENDING
+        cur, _ := queryOrder(db, table, orderID)
+        if cur.State == "PAID" && cur.PayChannelTradeNo == channelTradeNo {
+            return nil  // 重复回调 → 幂等命中
         }
-        return ErrInvalidState
+        return ErrInvalidState  // 真的异常,告警
     }
-
-    // 2.2 写映射表(UNIQUE 兜底,防并发重复写)
-    tx.Exec(`INSERT INTO order_external_ref(...) 
-             VALUES(?, ?, ?, 'SUCCESS') 
-             ON DUPLICATE KEY UPDATE channel_status='SUCCESS'`, ...)
-
-    return tx.Commit()
+    return nil
 }
 ```
 
-**双重幂等保障**:
-- **应用层**:先查映射表,已处理直接返回(快路径)
-- **DB 层**:`UNIQUE(channel_type, channel_order_no)` + `state` CAS 更新,**并发也不会重复处理**
+**幂等保障**:
+- **应用层**:CAS `WHERE state='PENDING'` —— 重复回调时 affected_rows=0,直接返回成功
+- **DB 层**:`UNIQUE(pay_channel, pay_channel_trade_no)` —— 防止脏并发
+- **out_trade_no 天然唯一**:它就是 order_id,**全局不冲突**
 
-#### 4.3.4 三方对账(T+1 兜底)
+#### 4.3.7 三方对账(T+1 兜底)
 
 ```mermaid
 flowchart TB
@@ -528,7 +642,7 @@ flowchart TB
     Pull --> Alipay["支付宝账单"]
     Pull --> Wechat["微信账单"]
     Pull --> SF["顺丰账单"]
-    Alipay & Wechat & SF --> Compare["逐单比对"]
+    Alipay & Wechat & SF --> Compare["按 out_trade_no 逐单比对"]
     Compare --> Match{匹配?}
     Match -->|一致| OK["✅ 标记对账成功"]
     Match -->|金额不符| Diff1["⚠️ 进差异平台"]
@@ -547,8 +661,13 @@ flowchart TB
 | **三方有内部无** | 三方收到钱,内部没单 | **漏单!** 紧急补救 |
 | **内部有三方无** | 内部"已支付"、三方查不到 | **假单!** 风控介入 |
 
+**为什么对账用 out_trade_no 而不是 trade_no**:
+- 内部主表索引是 `pay_out_trade_no` 唯一键,**O(1) 反查**
+- 三方账单一定包含 out_trade_no(他们也用这个标识业务方订单)
+- trade_no 用于**异常分支**(如某条记录我们查不到 out_trade_no 但三方有 trade_no 时,作为辅助匹配)
+
 **为什么对账是兜底**:
-> "实时链路可能因网络/重启/MQ 丢消息导致状态不一致,**对账是最后一道防线**——T+1 拉三方账单逐单比对,差异 100% 进人工。一个成熟的订单系统对账差异率应 < 0.01%。"
+> "实时链路可能因网络/重启/MQ 丢消息导致状态不一致,**对账是最后一道防线**——T+1 拉三方账单按 out_trade_no 逐单比对,差异 100% 进人工。一个成熟的订单系统对账差异率应 < 0.01%。"
 
 ### 4.4 订单主表设计(完整)
 
@@ -564,12 +683,18 @@ CREATE TABLE orders (
     address_snapshot JSON       NOT NULL,           -- 收件人快照
     expire_at       DATETIME    NOT NULL,           -- 超时时间
     paid_at         DATETIME    DEFAULT NULL,
+    -- 支付三方 ID 字段(1:1 关系,冗余主表,见 §4.3.2)
+    pay_channel             VARCHAR(32) DEFAULT NULL,  -- 'alipay'/'wxpay'
+    pay_out_trade_no        VARCHAR(64) DEFAULT NULL,  -- 我们传给三方的(= order_id 衍生)
+    pay_channel_trade_no    VARCHAR(64) DEFAULT NULL,  -- 三方回传的内部单号
     created_at      DATETIME    NOT NULL,
     updated_at      DATETIME    NOT NULL,
 
     PRIMARY KEY (order_id),
-    KEY idx_user_created (user_id, created_at DESC),  -- 用户查询主路径
-    KEY idx_state_expire (state, expire_at)           -- 超时扫描(理论上不用,delay queue)
+    KEY idx_user_created (user_id, created_at DESC),         -- 用户查询主路径
+    KEY idx_state_expire (state, expire_at),                 -- 超时扫描(理论上不用,delay queue)
+    UNIQUE KEY uk_pay_out (pay_out_trade_no),                -- 三方回调反查(out_trade_no 自带基因)
+    UNIQUE KEY uk_pay_channel_trade (pay_channel, pay_channel_trade_no)
 ) ENGINE=InnoDB;
 
 CREATE TABLE order_items (
@@ -913,9 +1038,12 @@ flowchart LR
                   拿到 order_id 不查 DB 就能定位分片,客服/对账/退款回调全无跨库;
                   对外用 hashids 编码防业务量泄露。
   
-  ③ 三方 ID 处理:order_external_ref 映射表(order_id + channel_type + channel_order_no),
-                  UNIQUE(channel_type, channel_order_no) 防重复回调,
-                  T+1 对账逐单比对,差异进人工核查平台。
+  ③ 三方 ID 处理:**按关系基数拆**——支付单号(1:1)冗余主表避免 JOIN,
+                  物流/退款(1:N)走独立映射表;
+                  映射表必须**冗余 user_id 作为分片键**,与主表同库 → 本地事务;
+                  **关键技巧**:out_trade_no = order_id 衍生(自带基因),
+                  三方回调直接解码定位分片,**零路由表 O(1) 反查**;
+                  T+1 对账按 out_trade_no 逐单比对,差异进人工核查平台。
 
   补充——三大角色查询路径(验证存储设计):
   ④ 用户 C 端走 MySQL 主分片(user_id 强制入参,P99 < 100ms);
@@ -957,7 +1085,7 @@ flowchart LR
 > - **核心资深信号**:
 >   - **分片跟主流量走**——C 端 80% 按 user_id,商家走 ES 异构索引,客服走基因解码
 >   - **基因法 order_id**——拿到订单号不查 DB 就能定位分片,**1000 倍查询性能差异**
->   - **三方 ID 映射 + 对账**——UNIQUE 防重复回调 + T+1 对账兜底,**对账差异率是订单系统的核心 SLA**
+>   - **三方 ID 处理**——按关系基数拆(1:1 冗余主表 / 1:N 独立映射)+ 冗余 user_id 同库 + **out_trade_no 自带基因 O(1) 反查**(无需全局路由表)+ T+1 对账兜底
 >   - **三角色查询路径物理隔离**——C 端 MySQL 主分片 / B 端 ES 异构 / 运营 ClickHouse,**绝不让运营 SQL 拖垮 C 端**
 >   - **大促削峰**——同步写库变 Redis 预占 + MQ 异步,**200 倍峰值不雪崩**
 > - **与其他 4S 系统的关系**:订单是"集大成者",借鉴秒杀(削峰)/支付(对账)/短链(分片基因思路)/发号器(ID 生成),但**多视角分片是订单独有难题**
