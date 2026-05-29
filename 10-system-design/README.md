@@ -31,6 +31,7 @@
 | IM | [08-im-system.md](08-im-system.md) | [08b-im-system-4s.md](08b-im-system-4s.md) |
 | 搜索 | [11-search-system.md](11-search-system.md) | [11b-search-system-4s.md](11b-search-system-4s.md) |
 | 支付 | [13-payment-system.md](13-payment-system.md) | [13b-payment-system-4s.md](13b-payment-system-4s.md) |
+| 优惠券 | [14-coupon-system.md](14-coupon-system.md) | [14b-coupon-system-4s.md](14b-coupon-system-4s.md) |
 | 订单 | [24-order-system.md](24-order-system.md) | [24b-order-system-4s.md](24b-order-system-4s.md) |
 
 ### 新增系统设计题的默认动作
@@ -76,6 +77,7 @@
 | [13-payment-system.md](13-payment-system.md) | 支付系统：状态机、幂等、渠道回调、对账、补偿 |
 | [13b-payment-system-4s.md](13b-payment-system-4s.md) | **支付系统(4S 版)**：用 4S 重推支付(强一致样本) + 与 13 旧版对比 |
 | [14-coupon-system.md](14-coupon-system.md) | 优惠券系统：领券并发、防超领、核销、规则、过期 |
+| [14b-coupon-system-4s.md](14b-coupon-system-4s.md) | **优惠券系统(4S 版)**：日发 2000 万券样板 — **三大核心考点**：Redis+MySQL 双层库存 + Lua 原子领券 / user_id 32×32 分片 + 双 UNIQUE 防超领 / 规则引擎 JSON 化 + 本地 LRU + Redis 二级缓存；与 [03b-seckill-system-4s.md](03b-seckill-system-4s.md) / [24b-order-system-4s.md](24b-order-system-4s.md) / [13b-payment-system-4s.md](13b-payment-system-4s.md) 形成"秒杀+订单+支付"杂交体对比；与 [14-coupon-system.md](14-coupon-system.md) 形成"教学讲解 vs 面试答题"双版本 |
 | [15-inventory-system.md](15-inventory-system.md) | 库存系统：预占、扣减、释放、防超卖、库存分桶 |
 | [16-ride-hailing-dispatch.md](16-ride-hailing-dispatch.md) | 打车派单系统：地理索引、司机匹配、派单策略、状态一致性 |
 | [17-monitoring-alerting.md](17-monitoring-alerting.md) | 监控告警系统：指标采集、时序存储、规则引擎、告警收敛 |
