@@ -28,6 +28,7 @@
 | [19-container-k8s-resource.md](19-container-k8s-resource.md) | 容器/K8s 资源：OOMKilled、CPU throttling、request/limit、探针 |
 | [20-linux-cmd-cheatsheet.md](20-linux-cmd-cheatsheet.md) | **Linux 排查命令速查**：USE 矩阵 + 30+ 命令字段精解 + 7 大组合套路 ⭐ |
 | [22-http-protocol.md](22-http-protocol.md) | **HTTP 协议**：9 种方法 + 状态码 + 头部 + 1.1/2/3 演进 ⭐ |
+| [23-k8s-traffic-flow.md](23-k8s-traffic-flow.md) | **K8s 多层流量分发**：5 层 LB 串联 + kube-proxy 三模式 + Service 4 类型 ⭐ |
 
 ## 高频题速览
 
