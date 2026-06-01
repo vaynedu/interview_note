@@ -11,6 +11,12 @@
 | [senior-go-interview-25.md](senior-go-interview-25.md) | Go 高级 / 资深工程师面试题 25 题 |
 | [go-concurrency-100.md](go-concurrency-100.md) | Go 并发专题 100 问 |
 
+### 系统设计专题深度问答
+
+| 文件 | 内容 |
+| --- | --- |
+| [order-system-qa.md](order-system-qa.md) | **订单系统深度问答(6 题)**:分片策略 / 主挂故障 / order_id 基因法 / 状态机 / 大促削峰 / ES 异构索引 ⭐ |
+
 ### 12 大领域速记题集（每篇 20 题）
 
 | 文件 | 领域 | 重点 |
