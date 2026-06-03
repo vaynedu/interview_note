@@ -1237,6 +1237,88 @@ stock:{sku_id}:meta → {total_stock: 10000}
 1. **桶 key 必须用 hash tag** `{sku_id_bN}`——大括号锁定 hash slot,**保证桶内 Lua 跨 key 操作不报 CROSSSLOT**(Redis Cluster 硬要求)。
 2. **桶之间散到不同节点**——不同的 `sku_id_bN` 哈希到不同 slot 即可,Cluster 自动分散。
 
+#### 3.5 深度补充:怎么严格保证 N 个桶落到不同节点
+
+§3 说"桶之间散到不同节点",但 Redis Cluster 用 `CRC16(tag) % 16384`,**不保证 32 个桶严格覆盖所有节点**——可能某节点 0 桶,某节点 6 桶,造成新的倾斜。三种精度递增的做法:
+
+**方案 1:CRC16 自然分布(默认,简单)**
+
+| 做法 | key 设计 | 适用 |
+| --- | --- | --- |
+| 每桶独立 tag | `{sku_id_b0}`、`{sku_id_b1}`、… | 节点数 ≤ 16 且桶数 ≥ 32 |
+| 依赖 CRC16 哈希 | 32 tag → 32 slot → 大概率覆盖所有节点 | 不要求严格均匀 |
+
+- ✅ 8 节点集群、32 桶,期望每节点 4 桶
+- ❌ 实际可能 0-7 桶/节点(标准差 ~2),小概率某节点 0 桶 = 桶全废
+- **判定**:简单场景够用,大促前必须看监控
+
+**方案 2:slot 感知预生成(精确,生产推荐)**
+
+启动时遍历集群拓扑,显式选 key 让分布均匀:
+
+```go
+func generateBucketKeys(sku string, N int, cluster *redis.ClusterClient) []string {
+    nodes := cluster.MasterNodes()       // 假设 8 节点
+    perNode := (N + len(nodes) - 1) / len(nodes)  // 每节点 ⌈N/8⌉ 桶
+    keys, cnt := []string{}, map[string]int{}
+
+    for i := 0; len(keys) < N; i++ {
+        key := fmt.Sprintf("stock:{sku_%s_b%d}", sku, i)
+        slot := crc16(extractTag(key)) % 16384
+        node := cluster.SlotToNode(slot)
+        if cnt[node] < perNode {
+            keys = append(keys, key)
+            cnt[node]++
+        }
+    }
+    return keys                          // 把这个列表下发到所有 Pod
+}
+```
+
+- ✅ **严格 N/nodeCount 均匀分布**
+- ❌ 扩缩容时 slot 重新映射,key 列表要重算并下发(用配置中心 watch)
+- **判定**:大促必备,平时可省
+
+**方案 3:hash tag 显式分组(借库存的真实落地形式)**
+
+把 32 桶分成 8 组,**每组 4 桶共享一个 hash tag**:
+
+```
+组 0 (落节点 N0):  stock:{grp0}_b0、{grp0}_b1、{grp0}_b2、{grp0}_b3
+组 1 (落节点 N1):  stock:{grp1}_b0..b3
+...
+组 7 (落节点 N7):  stock:{grp7}_b0..b3
+```
+
+- ✅ **组内可以 Lua 跨桶借库存**(同 tag → 同 slot → 同节点)
+- ✅ 组间分散 = 节点级分散
+- ❌ 每组的 tag(grp0/grp1...)要预先用 `CLUSTER KEYSLOT` 命令探测,确保落不同节点
+- **判定**:**§7 借库存机制的真正落地形式**,不分组的话借库存 Lua 必然 CROSSSLOT
+
+#### 3.6 hash tag 的双重作用辨析(高频混淆点)
+
+| 场景 | tag 用法 | 例子 | 出现在 Q4 哪里 |
+| --- | --- | --- | --- |
+| 同一个桶内的多个 key 要 Lua 跨 key | **同 tag** | `stock:{b0}`、`reserve:{b0}` 同 slot | §6 桶内扣减 |
+| 桶之间要散到不同节点 | **不同 tag** | `{sku_b0}` vs `{sku_b1}` 不同 slot | §3 §3.5 方案 1/2 |
+| 桶之间要支持借库存 | **分组同 tag** | 同组 `{grp0}_b0..b3` 同 slot,组间不同 | §7 借库存(方案 3) |
+
+→ **不要混用**:单桶独立 tag 的方案 1/2 必然不支持 Lua 跨桶借,只能客户端两阶段(查 + 扣,有竞态);要 Lua 借就必须方案 3 分组。
+
+#### 3.7 客户端选桶要跟 key 生成对齐
+
+```go
+// 方案 1/2:32 桶平铺
+key := bucketKeys[hash(userID) % 32]
+
+// 方案 3:8 组 × 4 桶
+grp := hash(userID) % 8
+sub := (hash(userID) / 8) % 4
+key := fmt.Sprintf("stock:{grp%d}_b%d", grp, sub)
+```
+
+key 生成方案变了,**路由逻辑必须跟着改**,否则会落到错的桶,直接 KEY_NOT_FOUND。
+
 #### 4. 桶数怎么选——3 个公式定死
 
 ```
