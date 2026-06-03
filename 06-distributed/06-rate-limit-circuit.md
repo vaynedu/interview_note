@@ -392,14 +392,133 @@ flowchart LR
 
 ### 3.3 混合方案
 
-**单机限流**先扛一批 + **分布式限流**做总配额：
+**单机限流**先扛一批 + **分布式限流**做总配额:
 
 ```
 1. 单机本地令牌桶 (100 QPS) → 大多请求过这里, 性能高
 2. 超过本地限制 → 分布式限流再决策
 ```
 
-或者**预分配**：分布式限流给每个实例分配本地配额，定期再均衡。
+或者**预分配**:分布式限流给每个实例分配本地配额,定期再均衡。
+
+### 3.4 分层架构:多层过滤的漏斗哲学
+
+限流不是"一个层做完"的事——生产架构通常**叠加多层**,每层用更便宜的方式拒绝更多请求。
+
+```mermaid
+flowchart TD
+    User[用户请求] --> CDN[CDN/WAF<br/>全球级:挡 DDoS+爬虫]
+    CDN --> GW[网关/Ingress<br/>集群级:粗 QPS]
+    GW --> Mesh[Sidecar/Envoy<br/>实例级:可选]
+    Mesh --> App[应用内 limiter<br/>业务级:按 userID/SKU]
+    App --> Token[本地业务 token<br/>业务库存粗过滤]
+    Token --> Redis[Redis Lua<br/>精确库存]
+    Redis --> DB[(MySQL<br/>账实兜底)]
+
+    style CDN fill:#fcc
+    style GW fill:#fec
+    style App fill:#cfc
+    style Token fill:#ccf
+    style Redis fill:#9f9
+```
+
+**每层拒绝成本递增**:
+
+| 层 | 拒绝在哪 | 单次成本 | 粒度 | 典型实现 |
+| --- | --- | --- | --- | --- |
+| **CDN / WAF** | 接入边缘 | ~100 ns | IP / Header | Cloudflare、阿里云 WAF |
+| **网关 / Ingress** | 集群入口 | ~1 μs | Service / 路由 | Nginx Ingress、APISIX、Kong |
+| **Sidecar / Envoy** | Pod 进程**前** | ~5 μs | 路由 + Header | Istio + Envoy `local_ratelimit` |
+| **应用内 limiter** | handler 前 | ~500 ns(命中)/ 50 μs(经 HTTP 解析) | 任意维度 | `x/time/rate`、`uber-go/ratelimit` |
+| **本地业务 token** | handler 内 | ~50 μs | 业务库存 | `atomic.AddInt64` |
+
+→ **漏斗哲学**:让最便宜的过滤器挡掉最多的请求。
+
+**典型配置(秒杀场景)**:
+
+```yaml
+# Nginx Ingress(集群入口粗限流)
+nginx.ingress.kubernetes.io/limit-rps: "10000"
+nginx.ingress.kubernetes.io/limit-connections: "1000"
+```
+
+```go
+// 应用内 limiter(细粒度按用户)
+var limiter = rate.NewLimiter(1000, 1000)  // 每 Pod 1000 QPS
+
+func handler(c *gin.Context) {
+    userID := c.GetInt64("user_id")
+    if !userLimiter(userID).Allow() {       // 防同一用户刷
+        return 429
+    }
+    if !limiter.Allow() {                   // 防 Pod 自身被打挂
+        return 429
+    }
+    // 业务逻辑...
+}
+```
+
+### 3.5 限流 vs 业务 token(高频混淆)
+
+**两者都在应用本地、都用 atomic,但解决不同问题**:
+
+| | 限流 limiter | 本地业务 token |
+| --- | --- | --- |
+| **控制什么** | **速率**(QPS) | **总量**(业务资源) |
+| **counter 含义** | 令牌池剩余令牌 | 这个 Pod 分到的真实资源(库存 / 配额) |
+| **自动补吗** | **每秒自动补满** | **永远不补,卖完为止** |
+| **拦的是** | "你太快了,排队" | "卖完了,别买了" |
+| **适用接口** | 所有接口共享 | 仅某个稀缺资源(秒杀 SKU / 票 / 红包) |
+| **位置** | handler **前**(中间件) | handler **内**(业务逻辑) |
+
+```go
+// 限流(每秒补 1000 令牌)
+var limiter = rate.NewLimiter(1000, 1000)
+
+// 本地业务 token(预分 20 件库存,卖完为 0)
+var localStock = int64(20)
+
+func handler() {
+    if !limiter.Allow() { return "rate limit" }       // 第一道:速率
+    if atomic.AddInt64(&localStock, -1) < 0 {
+        atomic.AddInt64(&localStock, 1)               // 回滚
+        return "sold out"                              // 第二道:库存
+    }
+    redisLuaDecrStock(...)                             // 第三道:精确扣
+}
+```
+
+**为什么两个都要**:
+
+- **只用限流** → 1000 QPS 通过的请求**全部打 Redis**(包括库存为 0 时),Redis 撑不住
+- **只用 token** → LB 倾斜或流量极端时,Pod 自己被请求**前置开销**(TCP + HTTP 解析)打挂
+- **叠加** = 限流削掉 99% 流量保护 Pod,token 再把剩下里"无效的"(库存已空)过滤掉保护 Redis,**到 Redis 的请求 ≤ 实际库存 + 安全余量**
+
+→ 普通业务接口只用 limiter;**稀缺资源场景**(秒杀 / 抢购 / 票务 / 红包)才需要 token 叠加。
+
+### 3.6 K8s 资源 ≠ 限流(常见误区)
+
+K8s Pod 配置里**没有"限流"概念**:
+
+```yaml
+resources:
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+```
+
+这是**硬件 cap**——Pod 用超会被 **CPU throttle 或 OOM kill**,**不会拒绝请求**。请求该进还是进,只是处理变慢然后崩,反而触发雪崩。
+
+K8s 层只有这些**间接**流量控制:
+
+| 机制 | 作用 | 不能做什么 |
+| --- | --- | --- |
+| `resources.limits` | CPU / 内存硬上限 | 拒绝请求 |
+| `HPA` | 根据指标自动扩缩容 | 即时挡量(扩容要 30s+) |
+| `PodDisruptionBudget` | 滚动更新最小可用 | 流量整形 |
+| `NetworkPolicy` | 网络隔离 | QPS 控制 |
+
+→ **想拒绝请求,必须显式接限流组件**(网关 / Sidecar / 应用),K8s 帮不上忙。
 
 ## 四、熔断（Circuit Breaker）
 
