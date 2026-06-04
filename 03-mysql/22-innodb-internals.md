@@ -104,6 +104,8 @@ Column Data:
   - 真实列数据
 ```
 
+> **一句话总结**:InnoDB 存储 = **表空间(.ibd) → Segment → Extent(1MB) → Page(16KB) → Row**,**Page 16KB 是 IO 最小单位**(读 1 行也读整页),COMPACT 行格式三隐藏列 `DB_TRX_ID/ROLL_PTR/ROW_ID` 是 MVCC 的根基。
+
 ---
 
 ## 三、Buffer Pool 深度
@@ -201,6 +203,8 @@ SSD 上可关闭:
   （风险：假设 SSD 原子写）
 ```
 
+> **一句话总结**:Buffer Pool 五件套 = **LRU 链表(young/old 区防全表扫污染)+ Flush 链表(脏页)+ Free 链表(空闲)+ Double Write(防部分写失效)+ 后台刷盘线程**,核心解决"**减少磁盘 IO + 崩溃恢复**",**old 区 + 老化窗口 1s** 是 InnoDB LRU 比 Redis 多的精髓。
+
 ---
 
 ## 四、Latch 与 Mini-Transaction
@@ -276,6 +280,8 @@ MTR 是内部最小的原子操作单元:
   一个事务多个 MTR → redo log 交错
   需要 MLOG_MULTI_REC_END 标记
 ```
+
+> **一句话总结**:Latch = **内存级短锁(ns 级)** 保护数据结构,Lock = **事务级长锁(行锁/MDL)** 保护数据;**MTR 是 InnoDB 内部最小原子单位**(一组 page 修改+对应 redo),一个事务由多个 MTR 组成,**面试别把 Latch 当行锁**。
 
 ---
 
@@ -372,6 +378,8 @@ DELETE 时:
   → 主键必须顺序
 ```
 
+> **一句话总结**:B+ 树操作核心 = **Latch Coupling(蟹式锁,根→叶逐层放锁)+ SMO 页分裂(中间页满则分裂,代价高)+ 页合并(50% 阈值)**,**顺序主键(自增)永远在最右页插入,UUID 无序主键中间分裂频繁**——这是大厂禁用 UUID 当 InnoDB 主键的根本原因。
+
 ---
 
 ## 六、锁算法
@@ -446,6 +454,8 @@ lock_t 结构:
   → innodb_deadlock_detect = OFF（极端优化）
   → 靠 innodb_lock_wait_timeout 被动超时
 ```
+
+> **一句话总结**:InnoDB 锁算法 = **锁加在索引页 + 兼容矩阵(S/X/IS/IX)+ Gap/Next-Key 防幻读 + 死锁 DFS 检测**,**死锁检测在高并发下本身是性能瓶颈**(O(N²)),阿里/字节大厂会关掉检测靠超时被动处理。
 
 ---
 
@@ -528,6 +538,8 @@ bool visible(row_version_t *rv, read_view_t *rv_view) {
   找出执行 > 1h 的事务 → KILL
 ```
 
+> **一句话总结**:MVCC 底层 = **undo log 版本链(insert undo 提交即删 / update undo 给 MVCC 留)+ ReadView(m_ids/min/max)+ 5 条可见性规则 + purge 线程异步清理**,**History list length > 几十万 = 长事务标志**,这是 ibdata 涨爆的最常见根因。
+
 ---
 
 ## 八、Change Buffer
@@ -582,6 +594,8 @@ innodb_change_buffering = all       缓存哪些操作 (all/inserts/deletes/purg
 ④ MySQL 关闭时 (如果 innodb_fast_shutdown=0)
 ```
 
+> **一句话总结**:Change Buffer **只对二级索引 + 非唯一索引生效**——把对不在 Buffer Pool 的二级索引页的更新先缓存,延迟到读时合并,**写密集场景神器**(订单/日志),唯一索引必须立刻校验所以不能用。
+
 ---
 
 ## 九、Adaptive Hash Index (AHI)
@@ -617,6 +631,8 @@ InnoDB 对热点查找自动建 Hash 索引:
   出现 AHI latch 高竞争 → 关闭
   SET GLOBAL innodb_adaptive_hash_index = OFF;
 ```
+
+> **一句话总结**:AHI = **InnoDB 自动给热点 page 建 Hash 索引**(B+ 树查找退化成 O(1)),**默认开但不是银弹**——LIKE/范围查询用不上 + 高并发下 AHI latch 单点,**线上看到 `BUF_BLOCK_REMOVE_HASH` 告警就关掉**。
 
 ---
 
@@ -697,6 +713,8 @@ LSN 是单调递增的日志位点:
    - redo prepare + binlog 缺 → rollback
 ```
 
+> **一句话总结**:redo log 深度 = **Log Buffer(内存)+ ib_logfile 循环写 + LSN 全局序号 + flush_log_at_trx_commit 三档刷盘**,崩溃恢复 = **找 checkpoint LSN → 重放 redo → undo 回滚未提交 → 2PC 裁决**,**双 1 配置(redo=1 + sync_binlog=1)是金融必备**。
+
 ---
 
 ## 十一、各版本关键演进
@@ -731,6 +749,8 @@ LSN 是单调递增的日志位点:
   hash join（8.0.18+）
   binlog_transaction_dependency_tracking = WRITESET（性能大幅提升）
 ```
+
+> **一句话总结**:版本演进口诀 **5.5 默认引擎 → 5.6 Online DDL+ICP → 5.7 JSON+并行复制 → 8.0 数据字典+原子 DDL+INSTANT+MGR+hash join**,**8.0 是分水岭**(原子 DDL 解决了 5.x 留垃圾表的痛点)。
 
 ---
 
@@ -852,3 +872,7 @@ B+ 树：O(log N)，底数可以是上千（单页 1000+ 项）
 - 04-redis/17-object-encoding-internals.md  Redis 源码（对偶）
 - 04-redis/18-eventloop-memory-internals.md Redis 源码（对偶）
 ```
+
+---
+
+> **一句话核心(全篇精炼)**:InnoDB 内部 = **Page(16KB)+ Buffer Pool(LRU young/old)+ Latch/MTR(内存级)+ B+ 树 SMO(顺序主键)+ 锁算法(Gap/Next-Key)+ MVCC(undo 链+ReadView+purge)+ Change Buffer(写优化)+ AHI(热点 Hash)+ redo/undo/binlog 2PC** 十大件,核心思想"**WAL 顺序写 + Buffer Pool 内存缓存 + 后台异步刷脏 + Latch/Lock 分层**",**长事务/无序主键/AHI latch 是三大杀手**。
