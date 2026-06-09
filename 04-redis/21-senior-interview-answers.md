@@ -213,7 +213,11 @@ L3: DB（source of truth）
 
 ---
 
-## 五、缓存一致性怎么讲
+## 五、Redis 一致性怎么讲(缓存↔DB + 主从 双维度)
+
+> 一致性是 Redis 高频题,两个维度别混:
+> - **5.1-5.7 缓存 vs DB 一致性**:Redis 和 MySQL 之间数据怎么对齐
+> - **5.8 主从复制一致性**:Redis 内部 master vs replica 的丢数据风险(项目实战答法)
 
 ### 5.1 一句话
 
@@ -286,6 +290,139 @@ return cache.Get(...)
   - 金融强一致: 直接走 DB，不用缓存
   - 删缓存失败: MQ 重试（不能用 Redis 自己重试）
 ```
+
+### 5.8 主从复制一致性（项目实战答法）⭐
+
+> 上面 5.1-5.7 讲"缓存 vs DB"一致性,这一节专门讲 **Redis 内部 master vs replica** 的一致性——是"Redis 一致性"题的另一个常考维度,**面试官追问"双机房怎么部署、min-replicas 怎么配"时直接拿这套答**。
+
+#### 5.8.1 一句话
+
+> "Redis 主从复制是**异步**的,**CAP 视角下偏 AP**——master 写成功后还没复制到 replica 时故障切换,会丢少量数据;**严格强一致场景必须用 DB 事务/ZK/etcd/Raft,Redis 只做缓存或辅助**。"
+
+#### 5.8.2 分层展开(背下来)
+
+**① CAP 视角定位**:
+
+```
+Redis 主从复制 = 异步 + 无 ack
+  → 选了 AP（高可用 + 分区容错）
+  → 牺牲 C（一致性）
+  → 写成功 ≠ 数据安全（slave 还没收到）
+  → 故障切换时未复制部分必丢
+```
+
+**② Redis Cluster 也救不了**:
+
+```
+Cluster 的分片和副本只解决:
+  ✓ 单分片故障不影响其他分片
+  ✓ replica 自动提升为 master
+但仍然:
+  ✗ 主从复制是异步的 → 切换瞬间丢数据
+  ✗ 跨分片操作没事务
+  → 不能当强一致最终状态存储
+```
+
+**③ 不适合 Redis 的场景(必背)**:
+
+```
+✗ 金融账户余额(必须 DB 事务)
+✗ 账务流水(必须落库 + binlog 对账)
+✗ 强一致分布式锁(用 etcd/ZK)
+✗ Leader 选举 / 元数据(用 Raft 类)
+
+✓ 商品库存扣减(可以,但 DB 必须兜底)
+✓ 首充状态记录(可以,但需对账)
+✓ 缓存 / 计数器 / 限流 / 热数据
+```
+
+#### 5.8.3 项目实战答题模板(完整段落,可直接背)
+
+```
+从 CAP 角度看,Redis 主从复制偏 AP / 最终一致性模型。
+Redis Cluster 通过分片和副本提升保证高可用,但由于主从复制是异步的,
+master 写成功后,如果数据还没复制到 replica 就发生故障切换,
+仍然可能造成少量数据丢失。
+
+因此 Redis 不能用于要求严格强一致、绝对不丢数据的最终状态存储。
+金融、账务这类场景通常会使用数据库事务、ZK、etcd、Raft 类组件来保证强一致,
+Redis 更多作为缓存或辅助组件。
+
+我们项目里,Redis Cluster 用于商品库存扣减和商品首充状态记录。
+集群部署在两个同城机房,master 分片交叉部署:
+  - 一旦单个 master 挂,只影响该 slot 所在分片的部分流量,
+    replica 提升为新 master,业务只短暂受影响;
+  - 一个机房故障时,由于 master 和 replica 跨机房部署,
+    另一个机房仍保留部分 master 和可提升的 replica,
+    能尽量降低整体影响面。
+
+为了减少异步复制的丢数据风险,我们配置:
+
+  min-replicas-to-write 1
+  min-replicas-max-lag 10
+
+含义:master 只有在至少 1 个 replica 在线、且复制延迟不超过 10 秒时,
+才允许继续写入;否则 master 拒绝写请求,
+避免在没有可用副本的情况下继续裸写。
+
+但这个配置只能减少丢数据窗口,不能提供强一致保证。
+对一致性敏感的业务,还需配合:
+  - 业务幂等 + 重试
+  - 数据库最终落库
+  - 消息队列兜底对账
+  - 关键操作走 DB 事务,Redis 仅作加速
+```
+
+#### 5.8.4 双机房 + master 交叉部署(画图加分)
+
+```
+              IDC-A                          IDC-B
+        ┌─────────────────┐            ┌─────────────────┐
+        │ Shard1 master   │←─────────→│ Shard1 replica  │
+        │ Shard2 replica  │←─────────→│ Shard2 master   │
+        │ Shard3 master   │←─────────→│ Shard3 replica  │
+        │ Shard4 replica  │←─────────→│ Shard4 master   │
+        └─────────────────┘            └─────────────────┘
+
+效果:
+  - 单 master 挂  → 同分片 replica 提升 → 影响 1/N 流量短暂抖动
+  - IDC-A 整体挂 → IDC-B 仍有 Shard2/4 master + Shard1/3 replica
+                 → Shard1/3 replica 提升为 master → 全集群仍可用
+                 → 影响面 = 切换期间(秒级)+ 异步复制 lag(< 10s)的写
+```
+
+#### 5.8.5 `min-replicas-to-write` 配置详解
+
+| 配置 | 行为 | 适用 |
+| --- | --- | --- |
+| 不配(默认) | master 裸奔写,所有 replica 挂也照写 | 只缓存场景 |
+| `min-replicas-to-write 1` + `max-lag 10` | 至少 1 个 replica 在线 + lag < 10s 才写 | **生产推荐** |
+| `min-replicas-to-write 2` + `max-lag 5` | 双副本兜底 + 严格 lag | 库存/账务/首充 |
+
+**注意**:
+- ✗ 写被拒时返回错误,**业务必须 fallback**(降级 / 排队 / 走 DB)
+- ✗ 配置过严 → 一个 replica 抖动就拒写 → 可用性反而下降
+- ✓ 必须配合监控:`info replication` 看 `slave_repl_offset` 滞后
+
+#### 5.8.6 边界 / 代价
+
+```
+能减少丢数据窗口,但不能消除:
+  - 异步复制本质决定 lag 内的写仍可能丢
+  - 写被拒时业务必须有 fallback
+  - max-lag 配过小 → 网络抖动就拒写 → 可用性下降
+  - 强一致依然要靠 DB 事务 / etcd / 业务对账
+
+线上配置经验:
+  - 普通缓存:    不配 min-replicas
+  - 库存 / 计数:  min-replicas-to-write 1, max-lag 10
+  - 金融辅助:    min-replicas-to-write 2, max-lag 5
+                + 关键操作必须 DB 兜底 + MQ 对账
+```
+
+#### 5.8.7 一句话兜底答(被追问时)
+
+> "**Redis 主从异步复制本质是 AP**,丢数据是必然的。`min-replicas-to-write 1 + max-lag 10` 能把窗口压到秒级,**但要做到不丢一条,必须业务侧补上 DB 落库 + MQ 对账 + 幂等重试**——单靠 Redis 配置永远做不到强一致。"
 
 ---
 
@@ -816,6 +953,7 @@ maxclients = 应用实例数 × 每实例连接池大小 × 1.5
 | Q6 | Cluster 16384 怎么来的？ | [04-replication-cluster.md](04-replication-cluster.md) |
 | **缓存** | | |
 | Q7 | 缓存一致性怎么保？ | 本文第五节 + [10-cache-consistency-design.md](10-cache-consistency-design.md) |
+| Q7+ | Redis 主从复制一致性?(双机房 + min-replicas) | 本文 5.8 + [04-replication-cluster.md](04-replication-cluster.md) |
 | Q8 | 缓存穿透 / 击穿 / 雪崩？ | 本文第十节 |
 | Q9 | 多级缓存怎么设计？ | 本文第四节 + [11-multi-tier-cache.md](11-multi-tier-cache.md) |
 | Q10 | 本地缓存选型？ | [11-multi-tier-cache.md](11-multi-tier-cache.md) |
