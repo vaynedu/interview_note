@@ -514,6 +514,114 @@ Redis 更多作为缓存或辅助组件。
   - 副本延迟告警加到 1s"
 ```
 
+### 6.6 Gossip 协议怎么答 ⭐
+
+> Gossip 是 Redis Cluster 的"神经系统"——**failover、slot 路由、节点发现全靠它**;面试问 Cluster 一定追到 Gossip,这一节直接给完整答法。
+
+#### 6.6.1 一句话
+
+> "Redis Cluster 没有中心协调节点(没有 ZK/etcd),**节点之间通过 cluster bus 周期性'八卦'集群状态**——谁在线、谁疑似挂、slot 在谁那、配置版本号是多少;最终所有节点收敛到一致的集群视图,**故障检测和 failover 都是基于这套 Gossip**。"
+
+#### 6.6.2 解决什么问题(分层)
+
+```
+Redis Cluster 是去中心化架构,没有 ZK/etcd 这种中心协调节点
+  → 需要一种机制让所有节点逐渐知道:
+
+  ✓ 哪些 master 在线
+  ✓ 哪些 replica 在线
+  ✓ 哪个节点疑似下线(PFAIL)
+  ✓ 哪个节点确认下线(FAIL)
+  ✓ 哪些 hash slot 属于哪个 master
+  ✓ 当前集群配置版本(currentEpoch / configEpoch)
+  ✓ failover 后谁变成了新 master
+
+→ 这套状态传播机制就是 Gossip
+```
+
+#### 6.6.3 通信方式(背下来)
+
+```
+通道:    cluster bus(独立端口 = 业务端口 + 10000,如 6379 → 16379)
+协议:    二进制,不是 RESP
+频率:    每个节点每秒随机选几个其他节点 PING
+         + 每 100ms 检查超时
+载荷:    PING / PONG 消息体里捎带 ~10 个其他节点的状态(随机采样)
+心跳:    cluster-node-timeout(默认 15s)——超过未收到 PONG → 标 PFAIL
+```
+
+#### 6.6.4 4 种核心消息
+
+| 消息 | 作用 |
+| --- | --- |
+| **PING / PONG** | 心跳 + 捎带节点状态(主力流量) |
+| **MEET** | 新节点加入(`CLUSTER MEET` 命令触发) |
+| **FAIL** | 多数派确认某节点挂 → 广播全集群 |
+| **PUBLISH** | 跨节点 Pub/Sub(非 Gossip 核心) |
+
+#### 6.6.5 故障检测流程(Gossip + failover)
+
+```
+T+0:    master A 心跳超时(cluster-node-timeout = 15s)
+T+15s:  节点 B 把 A 标记为 PFAIL(主观下线)
+        → B 通过 Gossip 把"A=PFAIL"捎带告诉其他节点
+T+?:    其他节点也陆续把 A 标 PFAIL
+T+?:    某节点统计:"超过半数 master 都说 A 是 PFAIL"
+        → 升级为 FAIL(客观下线)→ 广播 FAIL 消息
+T+?:    A 的 replica 发起选举(基于 configEpoch + Raft-like)
+T+?:    新 master 上任 → Gossip 传播新的 slot 归属和 configEpoch
+T+?:    全集群最终收敛到新视图
+```
+
+#### 6.6.6 项目实战答题模板(完整段落,可直接背)
+
+```
+Redis Cluster 的 Gossip 协议主要用来让集群里的节点互相传播状态信息。
+
+简单说:每个 Redis 节点不依赖中心节点维护集群状态,
+而是节点之间互相通信、互相"八卦"——
+谁还活着、谁挂了、slot 在谁那里。
+
+它解决的问题是:Redis Cluster 没有 ZK/etcd 这种中心协调节点,
+所以需要一种方式让所有节点逐渐知道集群状态:
+  - 哪些 master 在线
+  - 哪些 replica 在线
+  - 哪个节点疑似下线 / 确认下线
+  - 哪些 hash slot 属于哪个 master
+  - 当前集群配置版本是多少
+  - failover 后谁变成了新 master
+
+这套状态传播机制就是 Gossip。
+
+一句话:Redis Cluster 的 Gossip 协议,就是节点之间通过 cluster bus
+周期性交换集群状态,让整个集群在没有中心协调器的情况下,
+逐步感知节点存活、slot 分布和故障信息,并配合完成故障检测与 failover。
+```
+
+#### 6.6.7 Gossip 的边界 / 代价
+
+| 维度 | 表现 | 含义 |
+| --- | --- | --- |
+| **最终一致** | 状态在 ms~s 内收敛 | 不是强一致(故障感知有 lag) |
+| **流量开销** | O(N²)——节点越多越贵 | **不建议 > 1000 节点** |
+| **故障检测慢** | 默认 15s 超时 → 切换分钟级 | 调小会误判,**生产 5-15s 折中** |
+| **网络分区** | 少数派会一直 PFAIL 多数派 → 无法升级 FAIL | 少数派分区**只读或拒写** |
+
+#### 6.6.8 vs 中心协调(ZK/etcd 对比)
+
+| 维度 | Gossip(Redis Cluster) | ZK / etcd |
+| --- | --- | --- |
+| **架构** | 去中心化 | 强 leader |
+| **一致性** | 最终一致 | 强一致(Raft/Zab) |
+| **故障检测** | 多节点投票(PFAIL → FAIL) | leader 心跳 + 多数派 |
+| **运维** | 简单(单一组件) | 需要维护协调集群 |
+| **扩展性** | 1000 节点封顶 | 几千节点 |
+| **适用** | KV / 缓存 / 弱一致场景 | 元数据 / 强一致选主 |
+
+#### 6.6.9 一句话兜底答(被追问时)
+
+> "**Gossip 是 Redis Cluster 去中心化的核心**——它换来了运维简单,代价是**最终一致 + 故障感知有秒级 lag + 节点数 < 1000**;**对故障检测速度敏感的场景**(秒级 SLA),要么调小 `cluster-node-timeout`(承担误判风险),要么换 etcd/ZK。"
+
 ---
 
 ## 七、Redis 线上问题排查
@@ -951,6 +1059,7 @@ maxclients = 应用实例数 × 每实例连接池大小 × 1.5
 | Q4 | RDB vs AOF 怎么选？ | [03-persistence.md](03-persistence.md) |
 | Q5 | 主从同步流程？ | [04-replication-cluster.md](04-replication-cluster.md) |
 | Q6 | Cluster 16384 怎么来的？ | [04-replication-cluster.md](04-replication-cluster.md) |
+| Q6+ | Gossip 协议怎么答?(去中心化核心) | 本文 6.6 + [04-replication-cluster.md](04-replication-cluster.md) |
 | **缓存** | | |
 | Q7 | 缓存一致性怎么保？ | 本文第五节 + [10-cache-consistency-design.md](10-cache-consistency-design.md) |
 | Q7+ | Redis 主从复制一致性?(双机房 + min-replicas) | 本文 5.8 + [04-replication-cluster.md](04-replication-cluster.md) |
