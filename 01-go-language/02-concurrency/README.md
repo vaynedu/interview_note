@@ -11,6 +11,7 @@
 | 05 | [sync-package.md](sync-package.md) | Mutex / RWMutex / WaitGroup / Once / Cond / Map / Pool / atomic |
 | 06 | [context.md](context.md) | Context / 取消传播 / 超时 / 值传递 |
 | 07 | [memory-model.md](memory-model.md) | happens-before / 数据竞争 / atomic / race |
+| 08 | [errgroup-pattern.md](errgroup-pattern.md) | ★ 协程协同取消 + 首错收集(WaitGroup+ctx+Once 三件套) |
 
 ## 推荐学习顺序
 
@@ -22,6 +23,7 @@
 5. sync-package（其他原语）
 6. context（取消传播）
 7. memory-model（happens-before）
+8. errgroup-pattern（协程协同取消)
 ```
 
 ## Channel 强化路径
