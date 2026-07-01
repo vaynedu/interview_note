@@ -38,10 +38,10 @@
 | # | 文件 | 内容 | 状态 |
 | --- | --- | --- | --- |
 | 04 | [tool-use-function-calling](04-tool-use-function-calling.md) | ★ Tool Schema / 并行调用 / 错误处理 / Claude vs OpenAI | ✅ |
-| 05 | [agent-architectures](05-agent-architectures.md) | ★ ReAct / Plan-and-Execute / Reflexion / ToT / 论文复盘 | ⏳ |
+| 05 | [agent-architectures](05-agent-architectures.md) | ★ ReAct / Plan-and-Execute / Reflexion / ToT / 论文复盘 | ✅ |
 | 06 | [memory-and-context](06-memory-and-context.md) | 短期(messages 窗口)/ 长期(向量+KV)/ 摘要 / 滑窗 | ⏳ |
 | 07 | [rag-engineering](07-rag-engineering.md) | chunking / embedding / 检索 / Rerank / GraphRAG / Self-RAG | ⏳ |
-| 08 | [mcp-protocol](08-mcp-protocol.md) | ★ MCP 协议 / Server-Client / 写一个 MCP server | ⏳ |
+| 08 | [mcp-protocol](08-mcp-protocol.md) | ★ MCP 协议 / Server-Client / 写一个 MCP server | ✅ |
 
 ### 阶段 3:Agent 框架与多 Agent
 
