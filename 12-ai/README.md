@@ -47,8 +47,8 @@
 
 | # | 文件 | 内容 | 状态 |
 | --- | --- | --- | --- |
-| 09 | [agent-frameworks](09-agent-frameworks.md) | LangChain / LangGraph / LlamaIndex / AutoGen / CrewAI / Dify / Eino 选型 | ⏳ |
-| 10 | [multi-agent-orchestration](10-multi-agent-orchestration.md) | ★ Supervisor / Hierarchical / Swarm / GroupChat / 通信协议 | ⏳ |
+| 09 | [agent-frameworks](09-agent-frameworks.md) | LangChain / LangGraph / LlamaIndex / AutoGen / CrewAI / Dify / Eino 选型 | ✅ |
+| 10 | [multi-agent-orchestration](10-multi-agent-orchestration.md) | ★ Supervisor / Hierarchical / Swarm / GroupChat / 通信协议 | ✅ |
 
 ### 阶段 4:生产化(决定能不能上)
 
