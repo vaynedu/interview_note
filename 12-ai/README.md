@@ -54,8 +54,8 @@
 
 | # | 文件 | 内容 | 状态 |
 | --- | --- | --- | --- |
-| 11 | [evaluation-and-testing](11-evaluation-and-testing.md) | ★ Golden Set / LLM-as-Judge / Trajectory / Promptfoo / LangSmith | ⏳ |
-| 12 | [production-engineering](12-production-engineering.md) | 成本 / 监控 / Guardrails / 安全 / 限流 / 可观测 | ⏳ |
+| 11 | [evaluation-and-testing](11-evaluation-and-testing.md) | ★ Golden Set / LLM-as-Judge / Trajectory / Promptfoo / LangSmith | ✅ |
+| 12 | [production-engineering](12-production-engineering.md) | 成本 / 监控 / Guardrails / 安全 / 限流 / 可观测 | ✅ |
 
 ### 配套
 
