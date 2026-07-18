@@ -30,8 +30,8 @@
 | --- | --- | --- | --- |
 | 00 | [agent-learning-roadmap](00-agent-learning-roadmap.md) | 学习路线图 + 8 周计划 + 推荐资料 | ✅ |
 | 01 | [llm-fundamentals](01-llm-fundamentals.md) | Token / 上下文窗口 / 温度 / 采样 / 幻觉 / 模型选型 | ✅ |
-| 02 | [api-basics](02-api-basics.md) | Anthropic / OpenAI SDK / 流式 / 多模态 / 计费 / Go+Python | ⏳ |
-| 03 | [prompt-engineering](03-prompt-engineering.md) | CoT / Few-shot / ReAct / Reflexion / 结构化输出 / XML | ⏳ |
+| 02 | [api-basics](02-api-basics.md) | Anthropic / OpenAI SDK / 流式 / 多模态 / 计费 / Go+Python | ✅ |
+| 03 | [prompt-engineering](03-prompt-engineering.md) | CoT / Few-shot / ReAct / Reflexion / 结构化输出 / XML | ✅ |
 
 ### 阶段 2:单 Agent 构建(核心)
 
