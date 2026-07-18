@@ -62,7 +62,7 @@
 | # | 文件 | 内容 | 状态 |
 | --- | --- | --- | --- |
 | 90 | [agent-projects](90-agent-projects.md) | 实战:3 个由浅到深的 agent 项目(single / RAG / multi) | ⏳ |
-| 99 | [interview-questions](99-interview-questions.md) | Agent 高频面试题(原 05 内容会重写在这里) | ⏳ |
+| 99 | [interview-questions](99-interview-questions.md) | Agent 高频面试题(原 05 内容会重写在这里) | ✅ |
 
 ---
 
